@@ -2,20 +2,24 @@
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from datetime import datetime, timedelta
 from enum import Enum
 import json
 
 from src.core.simple_config import get_config
-from src.core.database import DatabaseManager, Agent, Task, AgentLog, GuardianAnalysis, ConductorAnalysis, DetectedDuplicate, SteeringIntervention
+from src.core.database import DatabaseManager, Agent, Task, AgentLog, GuardianAnalysis, ConductorAnalysis, DetectedDuplicate, SteeringIntervention, Workflow, WorkflowDefinition
 from src.agents.manager import AgentManager
+from src.workflow import WorkflowCompletionHandler
 from src.interfaces import LLMProviderInterface, get_cli_agent
 from src.memory.rag import RAGSystem
 from src.phases import PhaseManager
 from src.monitoring.guardian import Guardian
 from src.monitoring.conductor import Conductor, SystemDecision
 from src.monitoring.trajectory_context import TrajectoryContext
+
+if TYPE_CHECKING:
+    from src.core.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +376,7 @@ class MonitoringLoop:
         llm_provider: LLMProviderInterface,
         rag_system: RAGSystem,
         phase_manager: Optional[PhaseManager] = None,
+        worktree_manager: Optional["WorktreeManager"] = None,
     ):
         """Initialize monitoring loop with trajectory monitoring.
 
@@ -381,12 +386,14 @@ class MonitoringLoop:
             llm_provider: LLM provider
             rag_system: RAG system
             phase_manager: Optional phase manager for workflow monitoring
+            worktree_manager: Optional worktree manager for git merge operations
         """
         self.db_manager = db_manager
         self.agent_manager = agent_manager
         self.phase_manager = phase_manager
         self.llm_provider = llm_provider
         self.rag_system = rag_system
+        self.worktree_manager = worktree_manager
 
         # Initialize trajectory monitoring components
         self.guardian = Guardian(
@@ -413,6 +420,12 @@ class MonitoringLoop:
 
         # Cache for Guardian summaries
         self.guardian_summaries_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Workflow completion handler for auto-completing has_result=False workflows
+        self.completion_handler = WorkflowCompletionHandler(
+            db_manager=db_manager,
+            worktree_manager=worktree_manager
+        )
 
     async def start(self):
         """Start the monitoring loop."""
@@ -544,6 +557,12 @@ class MonitoringLoop:
                 logger.info(f"[DIAGNOSTIC]   - {wf.name} (ID: {wf.id[:8]}..., {task_count} total: {done_count} done, {failed_count} failed, {active_count} active)")
         finally:
             session.close()
+
+        # Check for workflow auto-completion (has_result=False workflows)
+        try:
+            await self._check_workflow_auto_completion()
+        except Exception as e:
+            logger.error(f"[AUTO-COMPLETE] Error checking workflow auto-completion: {e}")
 
         if self.phase_manager and self.phase_manager.workflow_id:
             logger.info(f"[DIAGNOSTIC] ✅ Conditions met - running diagnostic check for workflow {self.phase_manager.workflow_id[:8]}")
@@ -1128,6 +1147,63 @@ class MonitoringLoop:
         except Exception as e:
             logger.error(f"Error during tmux session cleanup: {e}")
             raise
+
+    async def _check_workflow_auto_completion(self):
+        """Check if any active workflows should be auto-completed.
+
+        For workflows with has_result=False configuration, automatically marks
+        them as complete when all tasks are finished and no agents are active.
+        """
+        session = self.db_manager.get_session()
+        try:
+            # Get all active workflows
+            active_workflows = session.query(Workflow).filter_by(status='active').all()
+
+            for workflow in active_workflows:
+                # Get workflow definition to check has_result setting
+                if not workflow.definition_id:
+                    continue
+
+                definition = session.query(WorkflowDefinition).filter_by(
+                    id=workflow.definition_id
+                ).first()
+
+                if not definition:
+                    continue
+
+                # Check workflow config for has_result setting
+                workflow_config = definition.workflow_config or {}
+                has_result = workflow_config.get('has_result', True)
+
+                if has_result:
+                    # Workflow expects explicit result submission, skip auto-complete
+                    logger.debug(f"[AUTO-COMPLETE] Workflow {workflow.id[:8]} has has_result=True, skipping")
+                    continue
+
+                # Check auto-complete eligibility
+                eligibility = self.completion_handler.check_auto_complete_eligibility(workflow.id)
+
+                if not eligibility.get('should_auto_complete', False):
+                    logger.debug(f"[AUTO-COMPLETE] Workflow {workflow.id[:8]} not ready: {eligibility.get('reason')}")
+                    continue
+
+                # Auto-complete the workflow
+                logger.info(f"[AUTO-COMPLETE] ✅ Auto-completing workflow {workflow.id[:8]}: {eligibility.get('reason')}")
+                result = self.completion_handler.complete_workflow(
+                    workflow_id=workflow.id,
+                    reason=f"Auto-completed: {eligibility.get('reason')}"
+                )
+                logger.info(f"[AUTO-COMPLETE] Workflow {workflow.id[:8]} marked as completed. Tasks: {result.get('tasks_summary')}")
+
+                # Clear phase_manager if this was the active workflow
+                if self.phase_manager and self.phase_manager.workflow_id == workflow.id:
+                    logger.info(f"[AUTO-COMPLETE] Clearing phase_manager for completed workflow")
+                    self.phase_manager.workflow_id = None
+
+        except Exception as e:
+            logger.error(f"[AUTO-COMPLETE] Error during auto-completion check: {e}", exc_info=True)
+        finally:
+            session.close()
 
     async def _check_workflow_stuck_state(self):
         """Check if workflow is stuck and needs diagnostic agent.

@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings, AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.documents import Document
@@ -125,6 +126,23 @@ class LangChainLLMClient:
                 else:
                     logger.warning(f"Google AI embedding configuration incomplete (key missing)")
 
+        elif embedding_provider == "vertex_ai":
+            vertex_provider = self.config.providers.get("vertex_ai")
+            if vertex_provider:
+                project_id = vertex_provider.project_id or os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = vertex_provider.location or os.getenv("GOOGLE_CLOUD_LOCATION")
+                if project_id and location:
+                    self._embedding_model = VertexAIEmbeddings(
+                        model_name=self.config.embedding_model,  # e.g., "text-embedding-004"
+                        project=project_id,
+                        location=location
+                    )
+                    logger.info(f"  ✓ Embedding model initialized: Vertex AI {self.config.embedding_model} (project: {project_id}, location: {location})")
+                elif not project_id:
+                    logger.warning(f"Vertex AI embedding configuration incomplete (project_id missing)")
+                else:
+                    logger.warning(f"Vertex AI embedding configuration incomplete (location missing - use 'global' for Claude/Gemini 3 Pro, or regional like 'us-central1' for other models)")
+
         if not self._embedding_model:
             logger.warning(f"Embedding model not initialized for provider: {embedding_provider}")
 
@@ -160,10 +178,14 @@ class LangChainLLMClient:
             logger.error(f"Provider {provider} not configured")
             return None
 
-        api_key = os.getenv(provider_config.api_key_env)
-        if not api_key:
-            logger.error(f"API key not found for {provider}")
-            return None
+        # Vertex AI uses service account auth (GOOGLE_APPLICATION_CREDENTIALS or gcloud),
+        # not API keys - skip API key check for vertex_ai
+        api_key = None
+        if provider != "vertex_ai":
+            api_key = os.getenv(provider_config.api_key_env)
+            if not api_key:
+                logger.error(f"API key not found for {provider}")
+                return None
 
         try:
             if provider == "openai":
@@ -255,6 +277,33 @@ class LangChainLLMClient:
                 return ChatGoogleGenerativeAI(
                     model=assignment.model,  # e.g., "gemini-2.5-flash", "gemini-1.5-pro"
                     google_api_key=api_key,
+                    temperature=assignment.temperature,
+                    max_tokens=assignment.max_tokens
+                )
+
+            elif provider == "vertex_ai":
+                # Vertex AI - uses GCP service account authentication
+                # Requires GOOGLE_APPLICATION_CREDENTIALS env var or gcloud auth
+                # NOTE: location is critical - Claude and Gemini 3 Pro require "global"
+                #       while other Gemini models use regional endpoints like "us-central1"
+                project_id = provider_config.project_id or os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = provider_config.location or os.getenv("GOOGLE_CLOUD_LOCATION")
+
+                if not project_id:
+                    logger.error("Vertex AI requires project_id in configuration or GOOGLE_CLOUD_PROJECT env var")
+                    return None
+
+                if not location:
+                    logger.error("Vertex AI requires location in configuration or GOOGLE_CLOUD_LOCATION env var. "
+                                "Use 'global' for Claude/Gemini 3 Pro, or regional like 'us-central1' for other models")
+                    return None
+
+                logger.info(f"Creating Vertex AI model: {assignment.model} (project: {project_id}, location: {location})")
+
+                return ChatVertexAI(
+                    model=assignment.model,  # e.g., "gemini-2.0-flash", "claude-3-5-sonnet-v2@20241022"
+                    project=project_id,
+                    location=location,
                     temperature=assignment.temperature,
                     max_tokens=assignment.max_tokens
                 )

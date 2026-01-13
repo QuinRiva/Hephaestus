@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect, Body, Request
+from fastapi import FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect, Body, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -552,6 +552,76 @@ class SendMessageResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+# Workflow Diff Review Request/Response Models
+class FileChangeInfo(BaseModel):
+    """File change information for diff."""
+
+    path: str = Field(..., description="Path to the changed file")
+    status: str = Field(..., description="Change type: added, modified, or deleted")
+
+
+class CommitInfo(BaseModel):
+    """Commit information for diff."""
+
+    sha: str = Field(..., description="Full commit SHA")
+    short_sha: str = Field(..., description="Short (8-char) commit SHA")
+    message: str = Field(..., description="Commit message")
+    author: str = Field(..., description="Commit author")
+    authored_date: str = Field(..., description="ISO timestamp of commit")
+    files_changed: int = Field(..., description="Number of files changed in commit")
+
+
+class DiffStats(BaseModel):
+    """Statistics for a diff."""
+
+    insertions: int = Field(..., description="Number of lines added")
+    deletions: int = Field(..., description="Number of lines removed")
+    files: int = Field(..., description="Number of files changed")
+
+
+class WorkflowDiffResponse(BaseModel):
+    """Response model for workflow final diff."""
+
+    workflow_id: str = Field(..., description="ID of the workflow")
+    workflow_name: str = Field(..., description="Name of the workflow")
+    workflow_branch: str = Field(..., description="Name of the workflow branch")
+    base_branch: str = Field(..., description="Name of the base branch (main)")
+    status: str = Field(..., description="Current final_merge_status")
+    files_changed: List[FileChangeInfo] = Field(default_factory=list, description="List of files with change type")
+    detailed_diff: str = Field(..., description="Full unified diff content")
+    stats: DiffStats = Field(..., description="Diff statistics")
+    commits: List[CommitInfo] = Field(default_factory=list, description="List of commits on workflow branch")
+
+
+class ApproveMergeRequest(BaseModel):
+    """Request model for approving workflow merge."""
+
+    approved_by: str = Field(default="api", description="Who approved the merge")
+
+
+class ApproveMergeResponse(BaseModel):
+    """Response model for merge approval."""
+
+    success: bool = Field(..., description="Whether the merge was successful")
+    merge_commit_sha: str = Field(..., description="The merge commit SHA")
+    conflicts_resolved: List[Dict[str, Any]] = Field(default_factory=list, description="List of any auto-resolved conflicts")
+
+
+class RejectMergeRequest(BaseModel):
+    """Request model for rejecting workflow merge."""
+
+    rejected_by: str = Field(..., description="Who rejected the merge")
+    reason: Optional[str] = Field(default=None, description="Reason for rejection")
+    delete_branch: bool = Field(default=False, description="Whether to delete the workflow branch")
+
+
+class RejectMergeResponse(BaseModel):
+    """Response model for merge rejection."""
+
+    success: bool = Field(..., description="Whether the rejection was successful")
+    branch_preserved: bool = Field(..., description="True if branch was not deleted")
+
+
 # Server state
 class ServerState:
     """Global server state."""
@@ -601,6 +671,9 @@ class ServerState:
         self.worktree_manager = WorktreeManager(
             db_manager=self.db_manager
         )
+
+        # Link worktree manager to phase manager for workflow branch creation
+        self.phase_manager.worktree_manager = self.worktree_manager
 
         # Initialize agent manager with phase manager
         self.agent_manager = AgentManager(
@@ -1801,7 +1874,15 @@ async def update_task_status(
             merge_commit_sha = None
             if request.status == "done" and hasattr(server_state, 'worktree_manager'):
                 try:
-                    merge_result = server_state.worktree_manager.merge_to_parent(agent_id)
+                    # Get workflow branch if exists (for workflow-isolated merges)
+                    target_branch = None
+                    if task.workflow_id:
+                        workflow = session.query(Workflow).filter_by(id=task.workflow_id).first()
+                        if workflow and workflow.workflow_branch_name:
+                            target_branch = workflow.workflow_branch_name
+                            logger.info(f"Task merge targeting workflow branch: {target_branch}")
+
+                    merge_result = server_state.worktree_manager.merge_to_parent(agent_id, target_branch=target_branch)
                     merge_commit_sha = merge_result.get("commit_sha") if isinstance(merge_result, dict) else None
                     logger.info(f"Merged completed work to parent (no validation): {merge_result}")
                 except Exception as e:
@@ -2102,7 +2183,15 @@ async def give_validation_review(
             # Merge agent's work to parent (if using worktrees)
             if hasattr(server_state, 'worktree_manager') and original_agent_id:
                 try:
-                    merge_result = server_state.worktree_manager.merge_to_parent(original_agent_id)
+                    # Get workflow branch if exists (for workflow-isolated merges)
+                    target_branch = None
+                    if task.workflow_id:
+                        workflow = session.query(Workflow).filter_by(id=task.workflow_id).first()
+                        if workflow and workflow.workflow_branch_name:
+                            target_branch = workflow.workflow_branch_name
+                            logger.info(f"Validated task merge targeting workflow branch: {target_branch}")
+
+                    merge_result = server_state.worktree_manager.merge_to_parent(original_agent_id, target_branch=target_branch)
                     logger.info(f"Merged validated work: {merge_result}")
                 except Exception as e:
                     logger.warning(f"Failed to merge validated work: {e}")
@@ -4344,7 +4433,7 @@ async def list_workflow_executions(status: str = "all"):
                 "definition_name": e.definition.name if e.definition else None,
                 "description": e.description,
                 "status": e.status,
-                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "created_at": e.created_at.isoformat() + 'Z' if e.created_at else None,
                 "working_directory": e.working_directory,
                 # Add stats
                 "stats": server_state.phase_manager.get_execution_stats(e.id)
@@ -4471,11 +4560,117 @@ async def get_workflow_execution(workflow_id: str):
         "definition_name": workflow.definition.name if workflow.definition else None,
         "description": workflow.description,
         "status": workflow.status,
-        "created_at": workflow.created_at.isoformat() if workflow.created_at else None,
+        "created_at": workflow.created_at.isoformat() + 'Z' if workflow.created_at else None,
         "working_directory": workflow.working_directory,
         "stats": stats,
         "phases": phases_data
     }
+
+
+@app.get("/api/workflow-executions/{workflow_id}/deletion-preview")
+async def get_workflow_deletion_preview(workflow_id: str):
+    """
+    Get a preview of what would be deleted for a workflow.
+
+    Use this before deletion to show the user what will be affected.
+    """
+    from src.workflow.deletion_handler import WorkflowDeletionHandler
+
+    deletion_handler = WorkflowDeletionHandler(
+        db_manager=server_state.db_manager,
+        agent_manager=server_state.agent_manager
+    )
+
+    try:
+        return deletion_handler.get_deletion_preview(workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/workflow-executions/{workflow_id}")
+async def delete_workflow_execution(
+    workflow_id: str,
+    force: bool = Query(False, description="Force terminate active agents before deletion")
+):
+    """
+    Permanently delete a workflow execution and all associated data.
+
+    This is a destructive operation that cannot be undone.
+    """
+    from src.workflow.deletion_handler import WorkflowDeletionHandler, WorkflowActiveError
+
+    deletion_handler = WorkflowDeletionHandler(
+        db_manager=server_state.db_manager,
+        agent_manager=server_state.agent_manager
+    )
+
+    try:
+        result = await deletion_handler.delete_workflow(workflow_id, force_terminate=force)
+        return {"success": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except WorkflowActiveError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to delete workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/workflow-executions/{workflow_id}/complete")
+async def complete_workflow_execution(workflow_id: str):
+    """
+    Manually mark a workflow execution as complete.
+
+    This is useful for workflows with has_result=False that have finished
+    all tasks but remain in 'active' status. The workflow will be marked
+    as completed and all phase executions will be finalized.
+
+    Preconditions:
+    - Workflow must exist and be in 'active' status
+    - No active agents working on workflow tasks
+    - No tasks in 'assigned' or 'in_progress' status
+    """
+    from src.workflow.completion_handler import WorkflowCompletionHandler, WorkflowNotReadyError
+
+    completion_handler = WorkflowCompletionHandler(
+        db_manager=server_state.db_manager,
+        worktree_manager=server_state.worktree_manager
+    )
+
+    try:
+        result = completion_handler.complete_workflow(
+            workflow_id=workflow_id,
+            reason="Manual completion via API"
+        )
+        return {"success": True, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except WorkflowNotReadyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to complete workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workflow-executions/{workflow_id}/completion-preview")
+async def get_workflow_completion_preview(workflow_id: str):
+    """
+    Get a preview of workflow completion status.
+
+    Returns information about whether the workflow can be completed,
+    including counts of pending tasks and active agents.
+    """
+    from src.workflow.completion_handler import WorkflowCompletionHandler
+
+    completion_handler = WorkflowCompletionHandler(
+        db_manager=server_state.db_manager,
+        worktree_manager=server_state.worktree_manager
+    )
+
+    try:
+        return completion_handler.get_completion_preview(workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.post("/tools/execute")
@@ -4653,3 +4848,258 @@ async def sse_endpoint():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# Workflow Diff Review Endpoints
+# =============================================================================
+
+
+@app.get("/workflow/{workflow_id}/final-diff", response_model=WorkflowDiffResponse)
+async def get_workflow_final_diff(workflow_id: str):
+    """Get the consolidated diff between main and the workflow branch for UI display.
+
+    Returns complete diff data including files changed, detailed diff content,
+    statistics, and commit history on the workflow branch.
+    """
+    logger.info(f"[FINAL-DIFF] Getting final diff for workflow {workflow_id}")
+
+    session = server_state.db_manager.get_session()
+    try:
+        # Get workflow from database
+        workflow = session.query(Workflow).filter_by(id=workflow_id).first()
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        if not workflow.workflow_branch_name:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Workflow {workflow_id} has no workflow branch"
+            )
+
+        logger.info(f"[FINAL-DIFF] Workflow branch: {workflow.workflow_branch_name}")
+        logger.info(f"[FINAL-DIFF] Current status: {workflow.status}")
+        logger.info(f"[FINAL-DIFF] Final merge status: {workflow.final_merge_status}")
+
+        # Get diff data from worktree manager
+        diff_data = server_state.worktree_manager.get_workflow_diff(
+            workflow.workflow_branch_name
+        )
+
+        # Transform files_changed to FileChangeInfo format
+        files_changed = [
+            FileChangeInfo(path=f["path"], status=f["status"])
+            for f in diff_data.get("files_changed", [])
+        ]
+
+        # Transform commits to CommitInfo format
+        commits = [
+            CommitInfo(
+                sha=c["sha"],
+                short_sha=c["short_sha"],
+                message=c["message"],
+                author=c["author"],
+                authored_date=c["authored_date"],
+                files_changed=c["files_changed"]
+            )
+            for c in diff_data.get("commits", [])
+        ]
+
+        # Build stats
+        stats_data = diff_data.get("stats", {})
+        stats = DiffStats(
+            insertions=stats_data.get("insertions", 0),
+            deletions=stats_data.get("deletions", 0),
+            files=stats_data.get("files", 0)
+        )
+
+        return WorkflowDiffResponse(
+            workflow_id=workflow_id,
+            workflow_name=workflow.name or workflow.description or f"Workflow {workflow_id[:8]}",
+            workflow_branch=workflow.workflow_branch_name,
+            base_branch=diff_data.get("base_branch", "main"),
+            status=workflow.final_merge_status or "not_applicable",
+            files_changed=files_changed,
+            detailed_diff=diff_data.get("detailed_diff", ""),
+            stats=stats,
+            commits=commits
+        )
+
+    except ValueError as e:
+        logger.error(f"[FINAL-DIFF] Error getting diff: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"[FINAL-DIFF] Unexpected error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get diff: {str(e)}")
+    finally:
+        session.close()
+
+
+@app.post("/workflow/{workflow_id}/approve-merge", response_model=ApproveMergeResponse)
+async def approve_workflow_merge(
+    workflow_id: str,
+    request: ApproveMergeRequest = Body(default=ApproveMergeRequest())
+):
+    """Approve and execute the final merge of the workflow branch to main.
+
+    Verifies workflow is in pending_final_review status, executes the merge,
+    and updates workflow state to completed.
+    """
+    logger.info(f"[APPROVE-MERGE] Approving merge for workflow {workflow_id}")
+    logger.info(f"[APPROVE-MERGE] Approved by: {request.approved_by}")
+
+    session = server_state.db_manager.get_session()
+    try:
+        # Get workflow from database
+        workflow = session.query(Workflow).filter_by(id=workflow_id).first()
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        # Verify workflow is in correct state
+        if workflow.status != "pending_final_review":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workflow is in '{workflow.status}' status, expected 'pending_final_review'"
+            )
+
+        if workflow.final_merge_status != "pending_review":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workflow merge status is '{workflow.final_merge_status}', expected 'pending_review'"
+            )
+
+        if not workflow.workflow_branch_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Workflow has no branch to merge"
+            )
+
+        logger.info(f"[APPROVE-MERGE] Executing merge of branch {workflow.workflow_branch_name}")
+
+        # Execute the merge
+        merge_result = server_state.worktree_manager.merge_workflow_to_base(
+            workflow_id,
+            workflow.workflow_branch_name
+        )
+
+        logger.info(f"[APPROVE-MERGE] Merge completed: {merge_result}")
+
+        # Update workflow state
+        workflow.final_merge_status = "merged"
+        workflow.final_merge_reviewed_at = datetime.utcnow()
+        workflow.final_merge_reviewed_by = request.approved_by
+        workflow.final_merge_commit_sha = merge_result["commit_sha"]
+        workflow.status = "completed"
+        workflow.completed_at = datetime.utcnow()
+
+        session.commit()
+
+        logger.info(f"[APPROVE-MERGE] Workflow {workflow_id} marked as completed")
+
+        # Broadcast update via WebSocket
+        await server_state.broadcast_update({
+            "type": "workflow_merge_approved",
+            "workflow_id": workflow_id,
+            "merge_commit_sha": merge_result["commit_sha"],
+            "approved_by": request.approved_by,
+            "status": "completed",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        return ApproveMergeResponse(
+            success=True,
+            merge_commit_sha=merge_result["commit_sha"],
+            conflicts_resolved=merge_result.get("conflicts_resolved", [])
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[APPROVE-MERGE] Merge failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
+    finally:
+        session.close()
+
+
+@app.post("/workflow/{workflow_id}/reject-merge", response_model=RejectMergeResponse)
+async def reject_workflow_merge(
+    workflow_id: str,
+    request: RejectMergeRequest
+):
+    """Reject the final merge and mark workflow as failed.
+
+    Optionally deletes the workflow branch if delete_branch is true.
+    """
+    logger.info(f"[REJECT-MERGE] Rejecting merge for workflow {workflow_id}")
+    logger.info(f"[REJECT-MERGE] Rejected by: {request.rejected_by}")
+    logger.info(f"[REJECT-MERGE] Reason: {request.reason}")
+    logger.info(f"[REJECT-MERGE] Delete branch: {request.delete_branch}")
+
+    session = server_state.db_manager.get_session()
+    try:
+        # Get workflow from database
+        workflow = session.query(Workflow).filter_by(id=workflow_id).first()
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        # Verify workflow is in correct state
+        if workflow.status != "pending_final_review":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workflow is in '{workflow.status}' status, expected 'pending_final_review'"
+            )
+
+        branch_preserved = True
+
+        # Optionally delete the workflow branch
+        if request.delete_branch and workflow.workflow_branch_name:
+            logger.info(f"[REJECT-MERGE] Deleting branch {workflow.workflow_branch_name}")
+            try:
+                server_state.worktree_manager.main_repo.git.branch(
+                    "-D", workflow.workflow_branch_name
+                )
+                branch_preserved = False
+                logger.info(f"[REJECT-MERGE] Branch deleted successfully")
+            except Exception as e:
+                logger.warning(f"[REJECT-MERGE] Failed to delete branch: {e}")
+                # Don't fail the rejection if branch deletion fails
+                branch_preserved = True
+
+        # Update workflow state
+        workflow.final_merge_status = "rejected"
+        workflow.final_merge_reviewed_at = datetime.utcnow()
+        workflow.final_merge_reviewed_by = request.rejected_by
+        workflow.status = "failed"
+
+        session.commit()
+
+        logger.info(f"[REJECT-MERGE] Workflow {workflow_id} marked as failed")
+
+        # Broadcast update via WebSocket
+        await server_state.broadcast_update({
+            "type": "workflow_merge_rejected",
+            "workflow_id": workflow_id,
+            "rejected_by": request.rejected_by,
+            "reason": request.reason,
+            "branch_preserved": branch_preserved,
+            "status": "failed",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        return RejectMergeResponse(
+            success=True,
+            branch_preserved=branch_preserved
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[REJECT-MERGE] Rejection failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Rejection failed: {str(e)}")
+    finally:
+        session.close()

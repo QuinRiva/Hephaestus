@@ -19,6 +19,7 @@ import {
   BlockedTask,
   WorkflowDefinition,
   WorkflowExecution,
+  WorkflowDiffResponse,
 } from '@/types';
 
 interface ResultQueryParams {
@@ -69,6 +70,82 @@ export const apiService = {
 
   getWorkflowExecution: async (workflowId: string): Promise<WorkflowExecution & { phases: any[] }> => {
     const { data } = await api.get(`/workflow-executions/${workflowId}`);
+    return data;
+  },
+
+  getWorkflowDeletionPreview: async (workflowId: string): Promise<{
+    workflow_id: string;
+    workflow_name: string;
+    workflow_description: string;
+    workflow_status: string;
+    is_active: boolean;
+    active_agents: Array<{
+      id: string;
+      status: string;
+      current_task_id: string | null;
+    }>;
+    counts: {
+      phases: number;
+      tasks: number;
+      tickets: number;
+      phase_executions: number;
+      memories: number;
+      agent_results: number;
+      validation_reviews: number;
+      ticket_comments: number;
+      ticket_history: number;
+      ticket_commits: number;
+      workflow_results: number;
+      diagnostic_runs: number;
+      board_config: number;
+    };
+  }> => {
+    const { data } = await api.get(`/workflow-executions/${workflowId}/deletion-preview`);
+    return data;
+  },
+
+  deleteWorkflowExecution: async (
+    workflowId: string,
+    force: boolean = false
+  ): Promise<{
+    success: boolean;
+    workflow_id: string;
+    deleted: Record<string, number>;
+    agents_terminated: number;
+    deleted_at: string;
+  }> => {
+    const { data } = await api.delete(`/workflow-executions/${workflowId}?force=${force}`);
+    return data;
+  },
+
+  getWorkflowCompletionPreview: async (workflowId: string): Promise<{
+    workflow_id: string;
+    workflow_name: string;
+    workflow_status: string;
+    can_complete: boolean;
+    reason: string | null;
+    pending_tasks: number;
+    active_agents: number;
+    total_tasks: number;
+    completed_tasks: number;
+    phases: Array<{
+      phase_id: string;
+      phase_name: string;
+      status: string;
+    }>;
+  }> => {
+    const { data } = await api.get(`/workflow-executions/${workflowId}/completion-preview`);
+    return data;
+  },
+
+  completeWorkflowExecution: async (workflowId: string): Promise<{
+    success: boolean;
+    workflow_id: string;
+    completed_at: string;
+    phases_completed: number;
+    reason: string;
+  }> => {
+    const { data } = await api.post(`/workflow-executions/${workflowId}/complete`);
     return data;
   },
 
@@ -536,6 +613,50 @@ export const apiService = {
     errors: Array<{ task_id: string; error: string }>;
   }> => {
     const { data } = await api.post('/sync-blocking-status');
+    return data;
+  },
+
+  // Workflow Final Diff Review Endpoints
+  getWorkflowFinalDiff: async (workflowId: string): Promise<WorkflowDiffResponse> => {
+    const { data } = await api.get(`/workflow/${workflowId}/final-diff`);
+    return data;
+  },
+
+  approveWorkflowMerge: async (
+    workflowId: string,
+    approvedBy?: string
+  ): Promise<{
+    success: boolean;
+    workflow_id: string;
+    status: string;
+    merge_commit_sha: string;
+    merged_at: string;
+    message: string;
+  }> => {
+    const { data } = await api.post(`/workflow/${workflowId}/approve-merge`, {
+      approved_by: approvedBy,
+    });
+    return data;
+  },
+
+  rejectWorkflowMerge: async (
+    workflowId: string,
+    rejectedBy: string,
+    reason?: string,
+    deleteBranch: boolean = false
+  ): Promise<{
+    success: boolean;
+    workflow_id: string;
+    status: string;
+    rejected_at: string;
+    message: string;
+    branch_deleted?: boolean;
+  }> => {
+    const { data } = await api.post(`/workflow/${workflowId}/reject-merge`, {
+      rejected_by: rejectedBy,
+      reason,
+      delete_branch: deleteBranch,
+    });
     return data;
   },
 };

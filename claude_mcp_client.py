@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Claude MCP Client for Hephaestus
-This client connects to the Hephaestus server running on port 8000
+This client connects to the Hephaestus server (port configurable via HEPH_SERVER_PORT env var)
 """
 
+import os
 from fastmcp import FastMCP
 import httpx
 import asyncio
@@ -11,8 +12,9 @@ import asyncio
 # Initialize MCP client
 mcp = FastMCP("hephaestus-client")
 
-# Hephaestus server URL
-HEPHAESTUS_URL = "http://localhost:8000"
+# Hephaestus server URL - port configurable via environment variable (TODO: Not implemented)
+HEPH_SERVER_PORT = os.getenv("HEPH_SERVER_PORT", "8000")
+HEPHAESTUS_URL = f"http://localhost:{HEPH_SERVER_PORT}"
 DEFAULT_AGENT_ID = "main-session-agent"
 
 @mcp.tool()

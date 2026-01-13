@@ -883,6 +883,32 @@ class FrontendAPI:
         finally:
             session.close()
 
+    async def delete_task(self, task_id: str) -> Dict[str, Any]:
+        """Delete a task by ID."""
+        session = self.db_manager.get_session()
+        try:
+            task = session.query(Task).filter_by(id=task_id).first()
+            if not task:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+            # Store task info for response
+            task_description = task.enriched_description or task.raw_description
+
+            # Delete the task
+            session.delete(task)
+            session.commit()
+
+            return {
+                "success": True,
+                "message": f"Task {task_id} deleted successfully",
+                "deleted_task": {
+                    "id": task_id,
+                    "description": task_description[:100] if task_description else None,
+                }
+            }
+        finally:
+            session.close()
+
     async def get_guardian_analyses(self, agent_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get guardian analyses for a specific agent."""
         from src.core.database import GuardianAnalysis
@@ -1573,6 +1599,11 @@ def create_frontend_routes(db_manager: DatabaseManager, agent_manager: AgentMana
     async def get_task_full_details(task_id: str):
         """Get comprehensive task details including prompts and relationships."""
         return await frontend_api.get_task_full_details(task_id)
+
+    @router.delete("/tasks/{task_id}")
+    async def delete_task(task_id: str):
+        """Delete a task by ID."""
+        return await frontend_api.delete_task(task_id)
 
     @router.get("/guardian-analyses/{agent_id}")
     async def get_guardian_analyses(agent_id: str, limit: int = Query(50, ge=1, le=200)):

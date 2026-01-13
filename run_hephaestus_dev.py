@@ -152,11 +152,14 @@ def setup_project(project_path: str):
         print("[Error] PRD.md not found in examples/")
         sys.exit(1)
 
-    # Copy .gitignore
+    # Copy .gitignore only if it doesn't already exist
     gitignore_source = Path(__file__).parent / "examples" / ".gitignore_template"
     gitignore_dest = project_dir / ".gitignore"
 
-    if gitignore_source.exists():
+    if gitignore_dest.exists():
+        print("[Setup] ✓ .gitignore already exists, skipping")
+        print(f"[Setup]   ⚠ Consider merging entries from {gitignore_source} into your .gitignore")
+    elif gitignore_source.exists():
         import shutil
         shutil.copy2(gitignore_source, gitignore_dest)
         print("[Setup] ✓ Copied .gitignore")

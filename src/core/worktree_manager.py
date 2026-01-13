@@ -724,11 +724,17 @@ class WorktreeManager:
         finally:
             session.close()
 
-    def merge_to_parent(self, agent_id: str) -> Dict[str, Any]:
+    def merge_to_parent(
+        self,
+        agent_id: str,
+        target_branch: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Merge agent work with automatic newest-file conflict resolution.
 
         Args:
             agent_id: Agent identifier
+            target_branch: Optional target branch to merge into (defaults to config.base_branch).
+                          Use this to merge task work into a workflow branch instead of main.
 
         Returns:
             Dict with merge status and details
@@ -764,8 +770,9 @@ class WorktreeManager:
             self._complete_stuck_merge(agent_id, session)
 
             # ========== STEP 4: SET TARGET BRANCH ==========
-            target_branch = self.config.base_branch
-            logger.info(f"[GIT-MERGE:{agent_id}] STEP 4: Target branch/commit set to '{target_branch}'")
+            # Use provided target_branch or fall back to config.base_branch
+            effective_target = target_branch if target_branch else self.config.base_branch
+            logger.info(f"[GIT-MERGE:{agent_id}] STEP 4: Target branch/commit set to '{effective_target}'")
 
             # ========== STEP 5: OPEN WORKTREE REPO ==========
             logger.info(f"[GIT-MERGE:{agent_id}] STEP 5: Opening worktree repository")
@@ -812,7 +819,7 @@ class WorktreeManager:
             merge_commit_sha = None
 
             # ========== STEP 7: STASH & CHECKOUT TARGET BRANCH ==========
-            logger.info(f"[GIT-MERGE:{agent_id}] STEP 7: Checking out '{target_branch}' in main repo")
+            logger.info(f"[GIT-MERGE:{agent_id}] STEP 7: Checking out '{effective_target}' in main repo")
             logger.info(f"[GIT-MERGE:{agent_id}]   Main repo current HEAD: {self.main_repo.head.commit.hexsha}")
 
             # Check if main repo has uncommitted changes that would block the merge
@@ -831,21 +838,21 @@ class WorktreeManager:
                 except GitCommandError as e:
                     logger.warning(f"[GIT-MERGE:{agent_id}]   Stash failed (may be nothing to stash): {e}")
 
-            self.main_repo.heads[target_branch].checkout()
+            self.main_repo.heads[effective_target].checkout()
 
-            logger.info(f"[GIT-MERGE:{agent_id}]   ✓ Checked out '{target_branch}'")
+            logger.info(f"[GIT-MERGE:{agent_id}]   ✓ Checked out '{effective_target}'")
             logger.info(f"[GIT-MERGE:{agent_id}]   New HEAD: {self.main_repo.head.commit.hexsha}")
             target_repo = self.main_repo
 
             # ========== STEP 8: ATTEMPT MERGE ==========
-            logger.info(f"[GIT-MERGE:{agent_id}] STEP 8: Attempting to merge '{worktree.branch_name}' into '{target_branch}'")
+            logger.info(f"[GIT-MERGE:{agent_id}] STEP 8: Attempting to merge '{worktree.branch_name}' into '{effective_target}'")
             logger.info(f"[GIT-MERGE:{agent_id}]   Merge command: git merge --no-ff {worktree.branch_name}")
 
             try:
                 merge_result = target_repo.git.merge(
                     worktree.branch_name,
                     no_ff=True,
-                    m=f"Merge agent {agent_id} work into {target_branch}"
+                    m=f"Merge agent {agent_id} work into {effective_target}"
                 )
 
                 # Merge succeeded without conflicts
@@ -912,14 +919,14 @@ class WorktreeManager:
             logger.info(f"[GIT-MERGE:{agent_id}] ========== MERGE COMPLETED SUCCESSFULLY ==========")
             logger.info(f"[GIT-MERGE:{agent_id}] Summary:")
             logger.info(f"[GIT-MERGE:{agent_id}]   - Status: {status}")
-            logger.info(f"[GIT-MERGE:{agent_id}]   - Merged to: {target_branch}")
+            logger.info(f"[GIT-MERGE:{agent_id}]   - Merged to: {effective_target}")
             logger.info(f"[GIT-MERGE:{agent_id}]   - Commit SHA: {merge_commit_sha}")
             logger.info(f"[GIT-MERGE:{agent_id}]   - Conflicts resolved: {len(conflicts_resolved)}")
             logger.info(f"[GIT-MERGE:{agent_id}]   - Total time: {resolution_time_ms}ms")
 
             return {
                 "status": status,
-                "merged_to": target_branch,
+                "merged_to": effective_target,
                 "commit_sha": merge_commit_sha,
                 "conflicts_resolved": conflicts_resolved,
                 "resolution_strategy": self.config.conflict_resolution_strategy,
@@ -1417,3 +1424,428 @@ class WorktreeManager:
                 except:
                     pass
         return total_size // (1024 * 1024)  # Convert to MB
+
+    # ========== WORKFLOW BRANCH METHODS ==========
+
+    def create_workflow_branch(self, workflow_id: str) -> Dict[str, Any]:
+        """Create a new workflow branch from the base branch.
+
+        Creates a branch for collecting all task work before final merge to main.
+        The branch is named using the configured prefix + first 8 chars of workflow_id.
+
+        Args:
+            workflow_id: Unique workflow identifier
+
+        Returns:
+            Dict with:
+              - branch_name: The created branch name
+              - created_from_sha: The commit SHA the branch was created from
+              - already_existed: Whether the branch already existed
+        """
+        logger.info(f"[WORKFLOW-BRANCH] ========== CREATE_WORKFLOW_BRANCH START ==========")
+        logger.info(f"[WORKFLOW-BRANCH] Workflow ID: {workflow_id}")
+
+        # Build branch name from config prefix + workflow_id prefix
+        branch_name = f"{self.config.workflow_branch_prefix}{workflow_id[:8]}"
+        logger.info(f"[WORKFLOW-BRANCH] Target branch name: {branch_name}")
+
+        # Get the base branch commit SHA
+        base_branch = self.config.base_branch
+        logger.info(f"[WORKFLOW-BRANCH] Base branch: {base_branch}")
+
+        try:
+            # Resolve base branch to commit SHA
+            if base_branch in self.main_repo.heads:
+                base_commit_sha = self.main_repo.heads[base_branch].commit.hexsha
+                logger.info(f"[WORKFLOW-BRANCH] Resolved base branch '{base_branch}' to commit: {base_commit_sha}")
+            else:
+                # Try as commit SHA directly
+                base_commit_sha = self.main_repo.commit(base_branch).hexsha
+                logger.info(f"[WORKFLOW-BRANCH] Resolved '{base_branch}' as commit SHA: {base_commit_sha}")
+
+        except Exception as e:
+            logger.error(f"[WORKFLOW-BRANCH] Failed to resolve base branch '{base_branch}': {e}")
+            raise ValueError(f"Invalid base_branch reference: {base_branch}")
+
+        # Check if branch already exists
+        already_existed = False
+        if branch_name in self.main_repo.heads:
+            logger.info(f"[WORKFLOW-BRANCH] Branch '{branch_name}' already exists")
+            already_existed = True
+            existing_commit = self.main_repo.heads[branch_name].commit.hexsha
+            logger.info(f"[WORKFLOW-BRANCH] Existing branch points to commit: {existing_commit}")
+
+            logger.info(f"[WORKFLOW-BRANCH] ========== CREATE_WORKFLOW_BRANCH COMPLETE (EXISTING) ==========")
+            return {
+                "branch_name": branch_name,
+                "created_from_sha": existing_commit,
+                "already_existed": True
+            }
+
+        # Create the new branch
+        logger.info(f"[WORKFLOW-BRANCH] Creating new branch '{branch_name}' from commit {base_commit_sha}")
+        try:
+            self.main_repo.git.branch(branch_name, base_commit_sha)
+            logger.info(f"[WORKFLOW-BRANCH] ✓ Branch created successfully")
+        except GitCommandError as e:
+            logger.error(f"[WORKFLOW-BRANCH] Failed to create branch: {e}")
+            raise
+
+        logger.info(f"[WORKFLOW-BRANCH] ========== CREATE_WORKFLOW_BRANCH COMPLETE ==========")
+        return {
+            "branch_name": branch_name,
+            "created_from_sha": base_commit_sha,
+            "already_existed": False
+        }
+
+    def get_workflow_diff(self, workflow_branch: str) -> Dict[str, Any]:
+        """Generate a consolidated diff between base branch and workflow branch.
+
+        This is used to review all changes made during a workflow before
+        merging to main.
+
+        Args:
+            workflow_branch: Name of the workflow branch to diff
+
+        Returns:
+            Dict with:
+              - base_branch: The base branch name
+              - workflow_branch: The workflow branch name
+              - files_changed: List of files with status (added/modified/deleted)
+              - detailed_diff: Full unified diff content
+              - stats: Dict with insertions, deletions, files count
+              - commits: List of commit info on workflow branch since divergence
+        """
+        logger.info(f"[WORKFLOW-DIFF] ========== GET_WORKFLOW_DIFF START ==========")
+        logger.info(f"[WORKFLOW-DIFF] Workflow branch: {workflow_branch}")
+
+        base_branch = self.config.base_branch
+        logger.info(f"[WORKFLOW-DIFF] Base branch: {base_branch}")
+
+        # Verify workflow branch exists
+        if workflow_branch not in self.main_repo.heads:
+            raise ValueError(f"Workflow branch '{workflow_branch}' does not exist")
+
+        # Verify base branch exists
+        if base_branch not in self.main_repo.heads:
+            raise ValueError(f"Base branch '{base_branch}' does not exist")
+
+        # Get commits for both branches
+        base_commit = self.main_repo.heads[base_branch].commit
+        workflow_commit = self.main_repo.heads[workflow_branch].commit
+
+        logger.info(f"[WORKFLOW-DIFF] Base commit: {base_commit.hexsha}")
+        logger.info(f"[WORKFLOW-DIFF] Workflow commit: {workflow_commit.hexsha}")
+
+        # Find merge base (common ancestor)
+        try:
+            merge_base_sha = self.main_repo.git.merge_base(base_commit.hexsha, workflow_commit.hexsha)
+            logger.info(f"[WORKFLOW-DIFF] Merge base: {merge_base_sha}")
+        except GitCommandError:
+            # No common ancestor, use base commit
+            merge_base_sha = base_commit.hexsha
+            logger.warning(f"[WORKFLOW-DIFF] No merge base found, using base commit: {merge_base_sha}")
+
+        # Get diff between merge base and workflow branch
+        diff_index = self.main_repo.commit(merge_base_sha).diff(workflow_commit)
+
+        # Categorize file changes
+        files_changed = []
+        for diff_item in diff_index:
+            if diff_item.new_file:
+                files_changed.append({
+                    "path": diff_item.b_path,
+                    "status": "added"
+                })
+            elif diff_item.deleted_file:
+                files_changed.append({
+                    "path": diff_item.a_path,
+                    "status": "deleted"
+                })
+            elif diff_item.renamed_file:
+                files_changed.append({
+                    "path": diff_item.a_path,
+                    "status": "deleted"
+                })
+                files_changed.append({
+                    "path": diff_item.b_path,
+                    "status": "added"
+                })
+            else:
+                files_changed.append({
+                    "path": diff_item.b_path or diff_item.a_path,
+                    "status": "modified"
+                })
+
+        logger.info(f"[WORKFLOW-DIFF] Files changed: {len(files_changed)}")
+
+        # Get detailed diff output
+        detailed_diff = self.main_repo.git.diff(merge_base_sha, workflow_commit.hexsha)
+
+        # Get stats from diff
+        insertions = 0
+        deletions = 0
+        try:
+            diff_stats = self.main_repo.git.diff(merge_base_sha, workflow_commit.hexsha, '--stat')
+            for line in diff_stats.split('\n'):
+                if 'insertion' in line or 'deletion' in line:
+                    parts = line.split(',')
+                    for part in parts:
+                        if 'insertion' in part:
+                            insertions = int(part.strip().split()[0])
+                        elif 'deletion' in part:
+                            deletions = int(part.strip().split()[0])
+        except Exception as e:
+            logger.warning(f"[WORKFLOW-DIFF] Failed to parse diff stats: {e}")
+
+        # Get list of commits on workflow branch since merge base
+        commits = []
+        try:
+            commit_range = f"{merge_base_sha}..{workflow_commit.hexsha}"
+            for commit in self.main_repo.iter_commits(commit_range):
+                commits.append({
+                    "sha": commit.hexsha,
+                    "short_sha": commit.hexsha[:8],
+                    "message": commit.message.strip(),
+                    "author": str(commit.author),
+                    "authored_date": datetime.fromtimestamp(commit.authored_date).isoformat(),
+                    "files_changed": len(commit.stats.files)
+                })
+            logger.info(f"[WORKFLOW-DIFF] Commits since divergence: {len(commits)}")
+        except Exception as e:
+            logger.warning(f"[WORKFLOW-DIFF] Failed to get commits: {e}")
+
+        stats = {
+            "insertions": insertions,
+            "deletions": deletions,
+            "files": len(files_changed)
+        }
+
+        logger.info(f"[WORKFLOW-DIFF] Stats: +{insertions} -{deletions} in {len(files_changed)} files")
+        logger.info(f"[WORKFLOW-DIFF] ========== GET_WORKFLOW_DIFF COMPLETE ==========")
+
+        return {
+            "base_branch": base_branch,
+            "workflow_branch": workflow_branch,
+            "merge_base_sha": merge_base_sha,
+            "files_changed": files_changed,
+            "detailed_diff": detailed_diff,
+            "stats": stats,
+            "commits": commits
+        }
+
+    def merge_workflow_to_base(
+        self,
+        workflow_id: str,
+        workflow_branch: str
+    ) -> Dict[str, Any]:
+        """Merge the workflow branch to base branch with conflict resolution.
+
+        This is the final merge that brings all workflow changes into the
+        configured base branch after review approval.
+
+        Args:
+            workflow_id: Workflow identifier (for logging)
+            workflow_branch: Name of the workflow branch to merge
+
+        Returns:
+            Dict with:
+              - status: "success" or "conflict_resolved"
+              - commit_sha: The merge commit SHA
+              - conflicts_resolved: List of any conflicts that were auto-resolved
+        """
+        logger.info(f"[WORKFLOW-MERGE:{workflow_id}] ========== MERGE_WORKFLOW_TO_MAIN START ==========")
+        logger.info(f"[WORKFLOW-MERGE:{workflow_id}] Workflow branch: {workflow_branch}")
+
+        session = self.db_manager.get_session()
+        start_time = datetime.utcnow()
+        lock_file = None
+        main_repo_stashed = False
+
+        try:
+            # ========== STEP 1: ACQUIRE MERGE LOCK ==========
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 1: Acquiring exclusive merge lock")
+            lock_file = self._acquire_merge_lock(workflow_id)
+
+            # ========== STEP 2: VERIFY BRANCHES EXIST ==========
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 2: Verifying branches exist")
+
+            base_branch = self.config.base_branch
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Base branch: {base_branch}")
+
+            if workflow_branch not in self.main_repo.heads:
+                raise ValueError(f"Workflow branch '{workflow_branch}' does not exist")
+
+            if base_branch not in self.main_repo.heads:
+                raise ValueError(f"Base branch '{base_branch}' does not exist")
+
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Both branches verified")
+
+            # ========== STEP 3: COMPLETE ANY STUCK MERGES ==========
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 3: Checking for stuck merges")
+            self._complete_stuck_merge(workflow_id, session)
+
+            # ========== STEP 4: STASH & CHECKOUT BASE BRANCH ==========
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 4: Checking out '{base_branch}'")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Current HEAD: {self.main_repo.head.commit.hexsha}")
+
+            # Stash any uncommitted changes
+            if self.main_repo.is_dirty() or self.main_repo.untracked_files:
+                logger.warning(f"[WORKFLOW-MERGE:{workflow_id}]   ⚠️  Main repo has uncommitted changes, stashing")
+                try:
+                    self.main_repo.git.stash("push", "-u", "-m", f"Auto-stash before workflow merge {workflow_id}")
+                    main_repo_stashed = True
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Changes stashed")
+                except GitCommandError as e:
+                    logger.warning(f"[WORKFLOW-MERGE:{workflow_id}]   Stash failed: {e}")
+
+            self.main_repo.heads[base_branch].checkout()
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Checked out '{base_branch}'")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   New HEAD: {self.main_repo.head.commit.hexsha}")
+
+            # ========== STEP 5: ATTEMPT MERGE ==========
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 5: Merging '{workflow_branch}' into '{base_branch}'")
+
+            conflicts_resolved = []
+            merge_commit_sha = None
+
+            try:
+                self.main_repo.git.merge(
+                    workflow_branch,
+                    no_ff=True,
+                    m=f"[Workflow {workflow_id[:8]}] Merge workflow branch to {base_branch}"
+                )
+
+                merge_commit_sha = self.main_repo.head.commit.hexsha
+                status = "success"
+
+                logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Merge completed (no conflicts)")
+                logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Merge commit: {merge_commit_sha}")
+
+            except GitCommandError as e:
+                logger.warning(f"[WORKFLOW-MERGE:{workflow_id}]   Merge error: {str(e)[:200]}")
+
+                if "CONFLICT" in str(e):
+                    # ========== STEP 6: RESOLVE CONFLICTS ==========
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 6: Resolving conflicts")
+
+                    # Open workflow branch as a temporary repo reference for conflict resolution
+                    # We need to get file content from the workflow branch
+                    workflow_repo = self.main_repo  # Same repo, different branch
+
+                    # Get conflicted files
+                    conflicted_files = self.main_repo.git.diff("--name-only", "--diff-filter=U").splitlines()
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Conflicted files: {len(conflicted_files)}")
+
+                    for file_path in conflicted_files:
+                        logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Resolving: {file_path}")
+
+                        # Get timestamps
+                        parent_timestamp = self._get_file_timestamp(self.main_repo, file_path, "HEAD")
+                        child_timestamp = self._get_file_timestamp(self.main_repo, file_path, workflow_branch)
+
+                        if parent_timestamp is None:
+                            parent_timestamp = datetime.utcnow()
+                        if child_timestamp is None:
+                            child_timestamp = datetime.utcnow()
+
+                        # Determine winner - prefer workflow branch (newer work)
+                        if child_timestamp >= parent_timestamp:
+                            resolution_choice = "workflow"
+                            content = self._get_file_content(self.main_repo, file_path, workflow_branch)
+                            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]     → Using workflow version")
+                        else:
+                            resolution_choice = "main"
+                            content = self._get_file_content(self.main_repo, file_path, "HEAD")
+                            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]     → Using main version")
+
+                        # Apply resolution
+                        try:
+                            self.main_repo.git.rm("--cached", "-f", file_path)
+                        except GitCommandError:
+                            pass
+
+                        self._write_file_content(self.main_repo.working_dir, file_path, content)
+                        self.main_repo.git.add(file_path)
+
+                        # Record resolution
+                        resolution_record = MergeConflictResolution(
+                            id=str(uuid.uuid4()),
+                            agent_id=f"WORKFLOW_{workflow_id[:8]}",
+                            file_path=file_path,
+                            parent_modified_at=parent_timestamp,
+                            child_modified_at=child_timestamp,
+                            resolution_choice=resolution_choice
+                        )
+                        session.add(resolution_record)
+
+                        conflicts_resolved.append({
+                            "file": file_path,
+                            "resolution": resolution_choice,
+                            "parent_timestamp": parent_timestamp.isoformat(),
+                            "child_timestamp": child_timestamp.isoformat()
+                        })
+
+                    # Commit resolution
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Committing conflict resolution")
+                    self.main_repo.git.commit(
+                        "-m", f"[Workflow {workflow_id[:8]}] Resolved {len(conflicts_resolved)} conflicts",
+                        "--no-verify"
+                    )
+                    merge_commit_sha = self.main_repo.head.commit.hexsha
+                    status = "conflict_resolved"
+
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Resolved {len(conflicts_resolved)} conflicts")
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   Merge commit: {merge_commit_sha}")
+                else:
+                    logger.error(f"[WORKFLOW-MERGE:{workflow_id}]   ✗ Non-conflict merge error")
+                    raise
+
+            session.commit()
+
+            # ========== STEP 7: RESTORE STASHED CHANGES ==========
+            if main_repo_stashed:
+                logger.info(f"[WORKFLOW-MERGE:{workflow_id}] STEP 7: Restoring stashed changes")
+                try:
+                    self.main_repo.git.stash("pop")
+                    logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   ✓ Stashed changes restored")
+                except GitCommandError as e:
+                    logger.warning(f"[WORKFLOW-MERGE:{workflow_id}]   ⚠️  Stash pop issue: {e}")
+
+            resolution_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] ========== MERGE COMPLETED ==========")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] Summary:")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   - Status: {status}")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   - Commit SHA: {merge_commit_sha}")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   - Conflicts resolved: {len(conflicts_resolved)}")
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}]   - Time: {resolution_time_ms}ms")
+
+            return {
+                "status": status,
+                "commit_sha": merge_commit_sha,
+                "conflicts_resolved": conflicts_resolved,
+                "resolution_time_ms": resolution_time_ms
+            }
+
+        except Exception as e:
+            logger.error(
+                f"[WORKFLOW-MERGE:{workflow_id}] ========== MERGE FAILED ==========",
+                exc_info=True
+            )
+            logger.error(f"[WORKFLOW-MERGE:{workflow_id}] Error: {e}")
+            session.rollback()
+
+            # Restore stash on failure
+            if main_repo_stashed:
+                try:
+                    self.main_repo.git.stash("pop")
+                except GitCommandError:
+                    pass
+
+            raise
+        finally:
+            if lock_file:
+                self._release_merge_lock(lock_file, workflow_id)
+            session.close()
+            logger.info(f"[WORKFLOW-MERGE:{workflow_id}] ========== OPERATION END ==========")

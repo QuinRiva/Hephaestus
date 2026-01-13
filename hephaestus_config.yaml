@@ -4,65 +4,63 @@ server:
   enable_cors: true
 paths:
   database: ./hephaestus.db
-  phases_folder: ./example_workflows/crackme_solving
+  phases_folder: ./example_workflows/prd_to_software
   worktree_base: /tmp/hephaestus_worktrees
-  project_root: /tmp/test_3gaur34
+  project_root: /home/Carl/fathom-platform
 git:
-  main_repo_path: /tmp/test_3gaur34
+  main_repo_path: /home/Carl/fathom-platform
   worktree_branch_prefix: agent-
   auto_commit: true
   conflict_resolution: newest_file_wins
+  require_final_review: true
+  workflow_branch_prefix: workflow-
 llm:
-  embedding_model: text-embedding-3-large
-  embedding_provider: openai
-  default_provider: openrouter
-  default_model: openai/gpt-oss-120b
-  default_openrouter_provider: cerebras
+  embedding_model: gemini-embedding-001
+  embedding_provider: vertex_ai
+  default_provider: vertex_ai
+  default_model: claude-sonnet-4.5
   default_temperature: 0.7
   default_max_tokens: 4000
   providers:
-    openai:
-      api_key_env: OPENAI_API_KEY
-    openrouter:
-      api_key_env: OPENROUTER_API_KEY
-      base_url: https://openrouter.ai/api/v1
-    groq:
-      api_key_env: GROQ_API_KEY
+    vertex_ai:
+      api_key_env: GOOGLE_APPLICATION_CREDENTIALS
+      project_id: test-ds-research
+      location: global
+      models:
+      - claude-opus-4.5
+      - claude-sonnet-4.5
+      - claude-haiku-4.5
+      - gemini-3-pro-preview
+      - gemini-3-flash-preview
   model_assignments:
     task_enrichment:
-      provider: openrouter
-      openrouter_provider: Cerebras
-      model: openai/gpt-oss-120b
+      provider: vertex_ai
+      model: claude-sonnet-4.5
       temperature: 0.7
       max_tokens: 4000
     agent_monitoring:
-      provider: openrouter
-      openrouter_provider: Cerebras
-      model: openai/gpt-oss-120b
+      provider: vertex_ai
+      model: claude-haiku-4.5
       temperature: 0.3
       max_tokens: 2000
     guardian_analysis:
-      provider: openrouter
-      openrouter_provider: Cerebras
-      model: openai/gpt-oss-120b
+      provider: vertex_ai
+      model: claude-opus-4.5
       temperature: 0.5
       max_tokens: 8000
     conductor_analysis:
-      provider: openrouter
-      openrouter_provider: Cerebras
-      model: openai/gpt-oss-120b
+      provider: vertex_ai
+      model: claude-opus-4.5
       temperature: 0.4
       max_tokens: 4000
     agent_prompts:
-      provider: openrouter
-      openrouter_provider: Cerebras
-      model: openai/gpt-oss-120b
+      provider: vertex_ai
+      model: claude-sonnet-4.5
       temperature: 0.8
       max_tokens: 4000
 agents:
   default_cli_tool: claude
-  cli_model: GLM-4.6
-  glm_api_token_env: GLM_API_TOKEN
+  cli_model: sonnet
   tmux_session_prefix: agent
   health_check_interval: 60
   max_health_failures: 3
@@ -70,7 +68,7 @@ agents:
 vector_store:
   qdrant_url: http://localhost:6333
   collection_prefix: hephaestus
-  embedding_dimension: 1536
+  embedding_dimension: 3072
 monitoring:
   enabled: true
   interval_seconds: 60
@@ -86,7 +84,7 @@ task_deduplication:
   enabled: true
   similarity_threshold: 0.999
   related_threshold: 0.5
-  embedding_model: text-embedding-3-large
+  embedding_model: gemini-embedding-001
   embedding_dimension: 3072
   batch_size: 100
 diagnostic_agent:
@@ -101,6 +99,6 @@ ticket_tracking:
   default_human_review: false
   default_approval_timeout: 1800
   embedding:
-    model: text-embedding-3-large
+    model: gemini-embedding-001
     dimensions: 3072
-    provider: openai
+    provider: vertex_ai

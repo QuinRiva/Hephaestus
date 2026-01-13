@@ -245,6 +245,10 @@ class SimpleConfig:
             return os.getenv('AZURE_OPENAI_API_KEY')
         elif provider == 'google_ai':
             return os.getenv('GOOGLE_API_KEY')
+        elif provider == 'vertex_ai':
+            # Vertex AI uses service account auth (GOOGLE_APPLICATION_CREDENTIALS)
+            # Return a placeholder to indicate auth is handled differently
+            return os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'service_account')
 
         return None
 

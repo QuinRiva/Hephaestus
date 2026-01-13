@@ -472,7 +472,7 @@ export interface WorkflowExecution {
   definition_id: string;
   definition_name: string;
   description: string;
-  status: 'active' | 'paused' | 'completed' | 'failed';
+  status: 'active' | 'paused' | 'completed' | 'failed' | 'pending_final_review';
   created_at: string;
   working_directory: string;
   stats: {
@@ -482,4 +482,52 @@ export interface WorkflowExecution {
     failed_tasks: number;
     active_agents: number;
   };
+  // Workflow branch and final review fields
+  workflow_branch_name?: string;
+  final_merge_status?: 'not_applicable' | 'pending_review' | 'approved' | 'merged' | 'rejected';
+  final_merge_reviewed_at?: string;
+  final_merge_reviewed_by?: string;
+  final_merge_commit_sha?: string;
+}
+
+// Workflow Final Diff Review Types
+
+export interface FileChangeInfo {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  old_path?: string;  // For renamed files
+  insertions: number;
+  deletions: number;
+}
+
+export interface CommitInfo {
+  sha: string;
+  message: string;
+  author: string;
+  timestamp: string;
+}
+
+export interface DiffStats {
+  total_files: number;
+  total_insertions: number;
+  total_deletions: number;
+}
+
+export interface WorkflowDiffResponse {
+  workflow_id: string;
+  workflow_name: string;
+  workflow_branch: string;
+  base_branch: string;
+  files: Array<{
+    path: string;
+    status: 'added' | 'modified' | 'deleted' | 'renamed';
+    old_path?: string;
+    insertions: number;
+    deletions: number;
+    diff: string;
+  }>;
+  commits: CommitInfo[];
+  stats: DiffStats;
+  can_merge: boolean;
+  merge_conflicts?: string[];
 }

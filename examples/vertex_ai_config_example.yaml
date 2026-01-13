@@ -1,0 +1,180 @@
+# Hephaestus Configuration Example: Google Cloud Vertex AI
+# This example shows how to configure Hephaestus to use Vertex AI for both
+# Claude (via Anthropic on Vertex) and Gemini models.
+#
+# PREREQUISITES:
+# 1. Install gcloud CLI and authenticate: gcloud auth application-default login
+# 2. Set your project: gcloud config set project YOUR_PROJECT_ID
+# 3. Enable Vertex AI API in your GCP project
+# 4. For Claude models, enable the Anthropic API in Vertex AI Model Garden
+#
+# IMPORTANT: Location configuration
+# - Claude models: require location="global"
+# - Gemini 3 Pro/Flash: require location="global"
+# - Gemini 2.5/2.0: use regional endpoints like "us-central1"
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  enable_cors: true
+
+# Paths Configuration
+paths:
+  database: "./hephaestus.db"
+  phases_folder: "./example_workflows/prd_to_software"
+  worktree_base: "/tmp/hephaestus_worktrees"
+  project_root: "./your_project"  # Change this to your project path
+
+# Git Configuration
+git:
+  main_repo_path: "./your_project"  # Change this to match project_root
+  worktree_branch_prefix: "agent-"
+  auto_commit: true
+  conflict_resolution: "newest_file_wins"
+
+# LLM Configuration - Vertex AI Setup
+llm:
+  # Embedding model - Vertex AI text embeddings
+  embedding_model: "text-embedding-004"
+  embedding_provider: "vertex_ai"
+
+  # Default provider for SDK workflows
+  default_provider: "vertex_ai"
+  default_model: "gemini-2.5-flash"
+  default_temperature: 0.7
+  default_max_tokens: 4000
+
+  # Provider Configuration
+  providers:
+    # Vertex AI Configuration - Claude and Gemini models
+    # Authentication via gcloud or GOOGLE_APPLICATION_CREDENTIALS
+    vertex_ai:
+      api_key_env: "GOOGLE_APPLICATION_CREDENTIALS"  # Uses service account auth
+      project_id: "your-gcp-project-id"  # Replace with your GCP project ID
+      location: "global"  # Use "global" for Claude and Gemini 3 Pro/Flash
+      models:
+        # Claude models on Vertex (require location: global)
+        # Claude 4.5 series (current as of Jan 2026)
+        - "claude-opus-4.5"
+        - "claude-sonnet-4.5"
+        - "claude-haiku-4.5"
+        # Claude 4.1 series
+        - "claude-opus-4.1"
+        # Legacy Claude 3.5 (still available)
+        - "claude-3-5-sonnet-v2@20241022"
+        - "claude-3-5-haiku@20241022"
+        # Gemini 3 models (preview, require global location)
+        - "gemini-3-pro-preview"
+        - "gemini-3-flash-preview"
+
+    # Regional Vertex AI for Gemini 2.x models
+    # Use this if you need regional endpoints for Gemini 2.5/2.0 models
+    vertex_ai_regional:
+      api_key_env: "GOOGLE_APPLICATION_CREDENTIALS"
+      project_id: "your-gcp-project-id"  # Replace with your GCP project ID
+      location: "us-central1"  # Regional endpoint for Gemini 2.x
+      models:
+        # Gemini 2.5 series (GA)
+        - "gemini-2.5-pro"
+        - "gemini-2.5-flash"
+        - "gemini-2.5-flash-lite"
+        # Gemini 2.0 series (GA)
+        - "gemini-2.0-flash"
+        - "gemini-2.0-flash-lite"
+
+  # Model Assignment Per Component
+  # Configure which model handles each system function
+  model_assignments:
+    # Task enrichment - analyzing and expanding task descriptions
+    task_enrichment:
+      provider: "vertex_ai"
+      model: "gemini-2.5-flash"  # Fast and cost-effective
+      temperature: 0.7
+      max_tokens: 4000
+
+    # Agent monitoring - tracking agent health and progress
+    agent_monitoring:
+      provider: "vertex_ai"
+      model: "gemini-2.5-flash-lite"  # Most cost-efficient for frequent checks
+      temperature: 0.3
+      max_tokens: 2000
+
+    # Guardian analysis - deep analysis of agent trajectories
+    guardian_analysis:
+      provider: "vertex_ai"
+      model: "claude-sonnet-4.5"  # Use Claude for sophisticated analysis
+      temperature: 0.5
+      max_tokens: 8000
+
+    # Conductor analysis - system-wide coherence checks
+    conductor_analysis:
+      provider: "vertex_ai"
+      model: "claude-sonnet-4.5"
+      temperature: 0.4
+      max_tokens: 4000
+
+    # Agent prompts - generating prompts for agents
+    agent_prompts:
+      provider: "vertex_ai"
+      model: "gemini-2.5-flash"
+      temperature: 0.8
+      max_tokens: 4000
+
+# Agent Configuration
+agents:
+  default_cli_tool: "claude"  # or "opencode"
+  cli_model: "sonnet"  # For Claude CLI
+  tmux_session_prefix: "agent"
+  health_check_interval: 60
+  max_health_failures: 3
+  termination_delay: 5
+
+# Vector Store Configuration
+vector_store:
+  qdrant_url: "http://localhost:6333"
+  collection_prefix: "hephaestus"
+  embedding_dimension: 768  # text-embedding-004 dimension
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  interval_seconds: 60
+  log_level: "INFO"
+  log_format: "json"
+  stuck_agent_threshold: 300
+  guardian_min_agent_age_seconds: 60
+
+# MCP Server Configuration
+mcp:
+  auth_required: false
+  session_timeout: 3600
+  max_concurrent_agents: 6
+
+# Task Deduplication
+task_deduplication:
+  enabled: true
+  similarity_threshold: 0.999
+  related_threshold: 0.5
+  embedding_model: "text-embedding-004"
+  embedding_dimension: 768
+  batch_size: 100
+
+# Diagnostic Agent
+diagnostic_agent:
+  enabled: false
+  cooldown_seconds: 60
+  min_stuck_time_seconds: 60
+  max_agents_to_analyze: 15
+  max_conductor_analyses: 5
+  max_tasks_per_run: 5
+
+# Ticket Tracking
+ticket_tracking:
+  enabled: true
+  default_human_review: false
+  default_approval_timeout: 1800
+  embedding:
+    model: "text-embedding-004"
+    dimensions: 768
+    provider: "vertex_ai"

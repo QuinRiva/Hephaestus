@@ -16,8 +16,12 @@ from pathlib import Path
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
+# Ensure logs directory exists before configuring logging
+Path("logs").mkdir(exist_ok=True)
+
 from src.core.simple_config import get_config
 from src.core.database import DatabaseManager
+from src.core.worktree_manager import WorktreeManager
 from src.agents.manager import AgentManager
 from src.interfaces import get_llm_provider
 from src.memory.rag import RAGSystem
@@ -96,13 +100,18 @@ async def setup_monitoring_system():
         except Exception as e:
             logger.warning(f"Phase manager initialization failed (optional): {e}")
 
+        # Initialize worktree manager for git merge operations
+        worktree_manager = WorktreeManager(db_manager=db_manager)
+        logger.info("Worktree manager initialized")
+
         # Create monitoring loop
         monitoring_loop = MonitoringLoop(
             db_manager=db_manager,
             agent_manager=agent_manager,
             llm_provider=llm_provider,
             rag_system=rag_system,
-            phase_manager=phase_manager
+            phase_manager=phase_manager,
+            worktree_manager=worktree_manager
         )
 
         logger.info("Monitoring system setup complete")

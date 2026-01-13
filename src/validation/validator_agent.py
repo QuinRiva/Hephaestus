@@ -280,6 +280,15 @@ async def spawn_validator_tmux_session(
         # Get the pane
         pane = tmux_session.attached_window.attached_pane
 
+        # Export PATH from current environment to ensure tmux session
+        # finds the same binaries (especially claude) as the user's shell
+        import os
+        current_path = os.environ.get('PATH', '')
+        if current_path:
+            logger.info(f"Exporting current PATH to tmux session for validator agent {agent_id}")
+            pane.send_keys(f'export PATH="{current_path}"', enter=True)
+            await asyncio.sleep(0.2)
+
         # If read-only, show indicator (optional)
         if read_only:
             pane.send_keys("echo 'READ-ONLY MODE: Validator agent starting...'", enter=True)
@@ -298,6 +307,19 @@ async def spawn_validator_tmux_session(
         pane.send_keys(launch_command, enter=True)
 
         logger.info(f"Launched Claude Code for validator agent {agent_id}")
+
+        # Handle Claude's --dangerously-skip-permissions confirmation dialog
+        # The dialog shows two options with arrow key navigation:
+        #   ❯ 1. No, exit
+        #     2. Yes, I accept
+        # We need to select option 2 and press Enter to accept
+        logger.info(f"Waiting for Claude confirmation dialog to appear...")
+        await asyncio.sleep(3)  # Wait for dialog to fully render
+        # Press Down arrow to move from option 1 to option 2, then Enter to confirm
+        pane.send_keys('Down', enter=False)
+        await asyncio.sleep(0.2)
+        pane.send_keys('', enter=True)  # Press Enter to confirm selection
+        logger.info(f"Accepted Claude --dangerously-skip-permissions dialog")
 
         # Wait for Claude to initialize (same as normal agents)
         await asyncio.sleep(8)

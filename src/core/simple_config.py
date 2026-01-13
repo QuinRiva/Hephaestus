@@ -54,6 +54,8 @@ class Config:
         self.worktree_branch_prefix = git.get('worktree_branch_prefix', 'agent-')
         self.auto_commit = git.get('auto_commit', True)
         self.conflict_resolution_strategy = git.get('conflict_resolution', 'newest_file_wins')
+        self.require_final_review = git.get('require_final_review', False)  # Require human review before final merge
+        self.workflow_branch_prefix = git.get('workflow_branch_prefix', 'workflow-')  # Prefix for workflow branches
 
         # LLM settings
         llm = config.get('llm', {})
@@ -169,6 +171,9 @@ class Config:
             self.llm_provider = os.getenv("LLM_PROVIDER")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        # Vertex AI settings
+        self.vertex_ai_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        self.vertex_ai_location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
         # LLM_MODEL and EMBEDDING_MODEL are deprecated - all model config comes from YAML
 
         # Database settings
@@ -261,6 +266,12 @@ class Config:
         if os.getenv("WORKTREE_DELETE_ARCHIVES_AFTER_DAYS"):
             self.delete_archives_after_days = int(os.getenv("WORKTREE_DELETE_ARCHIVES_AFTER_DAYS"))
 
+        # Workflow branch and final review settings
+        if os.getenv("REQUIRE_FINAL_REVIEW"):
+            self.require_final_review = os.getenv("REQUIRE_FINAL_REVIEW").lower() == "true"
+        if os.getenv("WORKFLOW_BRANCH_PREFIX"):
+            self.workflow_branch_prefix = os.getenv("WORKFLOW_BRANCH_PREFIX")
+
         # General settings
         if os.getenv("DEBUG"):
             self.debug = os.getenv("DEBUG").lower() == "true"
@@ -295,6 +306,9 @@ class Config:
             return self.openai_api_key
         elif self.llm_provider == "anthropic":
             return self.anthropic_api_key
+        elif self.llm_provider == "vertex_ai":
+            # Vertex AI uses service account auth, return placeholder
+            return "service_account"
         return None
 
     def validate(self):
@@ -303,6 +317,8 @@ class Config:
             raise ValueError("OPENAI_API_KEY is required when using OpenAI provider")
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY is required when using Anthropic provider")
+        if self.llm_provider == "vertex_ai" and not self.vertex_ai_project:
+            raise ValueError("GOOGLE_CLOUD_PROJECT is required when using Vertex AI provider")
         return True
 
     def to_env_dict(self) -> dict:

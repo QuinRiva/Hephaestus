@@ -57,13 +57,15 @@ def substitute_params_in_list(items: List[str], params: Dict[str, Any]) -> List[
 class PhaseManager:
     """Manages workflow phases at runtime with support for multiple concurrent workflows."""
 
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(self, db_manager: DatabaseManager, worktree_manager=None):
         """Initialize phase manager.
 
         Args:
             db_manager: Database manager instance
+            worktree_manager: Optional WorktreeManager instance for workflow branch creation
         """
         self.db_manager = db_manager
+        self._worktree_manager = worktree_manager
 
         # Legacy single workflow support (for backward compatibility)
         self.active_workflow: Optional[WorkflowDefinition] = None
@@ -74,6 +76,16 @@ class PhaseManager:
         self.active_executions: Dict[str, str] = {}  # workflow_id -> definition_id
 
         self.phases_config_cache: Dict[str, PhasesConfig] = {}  # Cache for workflow configs
+
+    @property
+    def worktree_manager(self):
+        """Get the WorktreeManager instance."""
+        return self._worktree_manager
+
+    @worktree_manager.setter
+    def worktree_manager(self, value):
+        """Set the WorktreeManager instance (can be set after initialization)."""
+        self._worktree_manager = value
 
     def load_active_workflow(self) -> Optional[str]:
         """Load the first active workflow from the database.
@@ -150,6 +162,51 @@ class PhaseManager:
             return None
         finally:
             session.close()
+
+    def _create_workflow_branch(self, workflow_id: str, session) -> None:
+        """Create a workflow branch for task isolation.
+
+        This creates a dedicated git branch for the workflow, where all task
+        work will be merged. At workflow completion, this branch can be
+        reviewed and merged to main.
+
+        Args:
+            workflow_id: The workflow ID to create a branch for
+            session: Database session (must be active)
+        """
+        if not self._worktree_manager:
+            logger.warning(f"WorktreeManager not available - skipping workflow branch creation for {workflow_id}")
+            return
+
+        try:
+            # Create the workflow branch
+            result = self._worktree_manager.create_workflow_branch(workflow_id)
+            branch_name = result.get("branch_name")
+
+            if branch_name:
+                # Update the workflow record with branch info
+                workflow = session.query(Workflow).filter_by(id=workflow_id).first()
+                if workflow:
+                    workflow.workflow_branch_name = branch_name
+                    workflow.workflow_branch_created = True
+
+                    # Set final_merge_status based on require_final_review config
+                    config = get_config()
+                    if config.require_final_review:
+                        workflow.final_merge_status = "pending_review"
+                    else:
+                        workflow.final_merge_status = "not_applicable"
+
+                    session.commit()
+                    logger.info(f"✅ Created workflow branch '{branch_name}' for workflow {workflow_id}")
+                    logger.info(f"   final_merge_status = {workflow.final_merge_status}")
+            else:
+                logger.warning(f"Workflow branch creation returned no branch name for {workflow_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to create workflow branch for {workflow_id}: {e}")
+            # Don't fail the workflow creation - just log and continue
+            # The workflow can still function without branch isolation
 
     def initialize_workflow(self, workflow_def: WorkflowDefinition, phases_config: Optional['PhasesConfig'] = None) -> str:
         """Initialize a workflow and its phases in the database.
@@ -254,6 +311,14 @@ class PhaseManager:
 
                 session.commit()
                 logger.info(f"Created new workflow '{workflow_def.name}' with {len(workflow_def.phases)} phases")
+
+                # Create workflow branch for the new workflow
+                self._create_workflow_branch(workflow_id, session)
+
+            # For existing workflows, check if they need a branch (for migration)
+            if existing_workflow and not existing_workflow.workflow_branch_created:
+                logger.info(f"Existing workflow missing branch, creating one...")
+                self._create_workflow_branch(existing_workflow.id, session)
 
             # Store as active workflow
             self.active_workflow = workflow_def
@@ -870,6 +935,9 @@ class PhaseManager:
                     logger.info(f"Prepared Phase 1 task info for workflow {workflow_id}")
 
             session.commit()
+
+            # Create workflow branch for this execution
+            self._create_workflow_branch(workflow_id, session)
 
             # Track active execution
             self.active_executions[workflow_id] = definition_id

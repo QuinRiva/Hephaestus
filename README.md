@@ -233,6 +233,32 @@ This script checks:
 
 The script provides a color-coded report showing what's set up and what needs attention.
 
+### Starting the Servers
+
+Hephaestus requires two servers to be running: the **backend API** and the **frontend UI**.
+
+**Terminal 1 - Start the Frontend:**
+```bash
+cd frontend
+npm install    # First time only
+npm run dev
+```
+This starts the React development server at `http://localhost:3000`.
+
+**Terminal 2 - Start the Backend (with Hephaestus Dev):**
+```bash
+python run_hephaestus_dev.py --path /path/to/your/project
+```
+This starts the backend API (port 8000) and the Guardian monitor.
+
+**Alternative - Start Backend Only (without Hephaestus Dev):**
+```bash
+python run_server.py
+```
+Use this if you want to run just the MCP server without the pre-configured development workflows.
+
+Once both servers are running, open `http://localhost:3000` in your browser.
+
 ### Get Started in 10 Minutes
 
 Build your first self-adapting workflow:

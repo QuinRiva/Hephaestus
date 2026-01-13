@@ -234,7 +234,7 @@ class Workflow(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     status = Column(
         String,
-        CheckConstraint("status IN ('active', 'completed', 'paused', 'failed')"),
+        CheckConstraint("status IN ('active', 'completed', 'paused', 'failed', 'pending_final_review')"),
         default="active",
         nullable=False,
     )
@@ -252,6 +252,22 @@ class Workflow(Base):
     result_found = Column(Boolean, default=False)
     result_id = Column(String, ForeignKey("workflow_results.id"))
     completed_by_result = Column(Boolean, default=False)
+
+    # Workflow branch isolation fields
+    workflow_branch_name = Column(String)  # Name of the workflow's dedicated branch (e.g., "workflow-abc123")
+    workflow_branch_created = Column(Boolean, default=False)  # Whether the branch has been created
+
+    # Final merge review fields
+    final_merge_status = Column(
+        String,
+        CheckConstraint(
+            "final_merge_status IN ('not_applicable', 'pending_review', 'approved', 'merged', 'rejected')"
+        ),
+        default="not_applicable",
+    )
+    final_merge_reviewed_at = Column(DateTime)  # When review decision was made
+    final_merge_reviewed_by = Column(String)  # Who made the decision
+    final_merge_commit_sha = Column(String)  # The merge commit SHA after final merge to main
 
     # Relationships
     definition = relationship("WorkflowDefinition", back_populates="executions")

@@ -217,6 +217,15 @@ class AgentManager:
             # Send launch command to tmux
             pane = tmux_session.attached_window.attached_pane
 
+            # Always export PATH from current environment to ensure tmux session
+            # finds the same binaries (especially claude) as the user's shell
+            import os
+            current_path = os.environ.get('PATH', '')
+            if current_path:
+                logger.info(f"Exporting current PATH to tmux session for agent {agent_id}")
+                pane.send_keys(f'export PATH="{current_path}"', enter=True)
+                await asyncio.sleep(0.2)
+
             # If using GLM, export env vars in the shell first
             if env_vars:
                 logger.info(f"Exporting GLM environment variables in shell for agent {agent_id}")
@@ -227,6 +236,21 @@ class AgentManager:
 
             # Now send the claude launch command
             pane.send_keys(launch_command, enter=True)  # enter=True sends Enter key after command
+
+            # Handle Claude's --dangerously-skip-permissions confirmation dialog
+            # The dialog shows two options with arrow key navigation:
+            #   ❯ 1. No, exit
+            #     2. Yes, I accept
+            # We need to select option 2 and press Enter to accept
+            if cli_type == "claude":
+                logger.info(f"Waiting for Claude confirmation dialog to appear...")
+                await asyncio.sleep(3)  # Wait for dialog to fully render
+                # Press Down arrow to move from option 1 to option 2, then Enter to confirm
+                pane.send_keys('Down', enter=False)
+                await asyncio.sleep(0.2)
+                pane.send_keys('', enter=True)  # Press Enter to confirm selection
+                logger.info(f"Accepted Claude --dangerously-skip-permissions dialog")
+                await asyncio.sleep(2)  # Wait for Claude to initialize after acceptance
 
             # 6. Register agent in database
             session = self.db_manager.get_session()
@@ -1002,6 +1026,15 @@ REMEMBER:
 
             pane = tmux_session.attached_window.attached_pane
 
+            # Always export PATH from current environment to ensure tmux session
+            # finds the same binaries (especially claude) as the user's shell
+            import os
+            current_path = os.environ.get('PATH', '')
+            if current_path:
+                logger.info(f"Exporting current PATH to tmux session for restarted agent {agent_id}")
+                pane.send_keys(f'export PATH="{current_path}"', enter=True)
+                await asyncio.sleep(0.2)
+
             # If using GLM, export env vars in the shell first
             if env_vars:
                 logger.info(f"Exporting GLM environment variables in shell for restarted agent {agent_id}")
@@ -1012,6 +1045,21 @@ REMEMBER:
 
             # Now send the claude launch command
             pane.send_keys(launch_command, enter=True)
+
+            # Handle Claude's --dangerously-skip-permissions confirmation dialog
+            # The dialog shows two options with arrow key navigation:
+            #   ❯ 1. No, exit
+            #     2. Yes, I accept
+            # We need to select option 2 and press Enter to accept
+            if agent.cli_type == "claude":
+                logger.info(f"Waiting for Claude confirmation dialog to appear...")
+                await asyncio.sleep(3)  # Wait for dialog to fully render
+                # Press Down arrow to move from option 1 to option 2, then Enter to confirm
+                pane.send_keys('Down', enter=False)
+                await asyncio.sleep(0.2)
+                pane.send_keys('', enter=True)  # Press Enter to confirm selection
+                logger.info(f"Accepted Claude --dangerously-skip-permissions dialog")
+                await asyncio.sleep(2)  # Wait for Claude to initialize after acceptance
 
             # Update agent record
             agent.tmux_session_name = new_session_name

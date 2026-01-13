@@ -19,12 +19,16 @@ class HephaestusConfig:
     qdrant_url: str = "http://localhost:6333"
 
     # LLM - Basic settings
-    llm_provider: str = "anthropic"  # or "openai"
+    llm_provider: str = "vertex_ai"  # or "openai", "anthropic", etc.
     llm_model: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
+    
+    # Vertex AI settings
+    vertex_ai_project: Optional[str] = None
+    vertex_ai_location: Optional[str] = None
 
     # Server
     mcp_port: int = 8000
@@ -53,6 +57,8 @@ class HephaestusConfig:
     worktree_branch_prefix: str = "agent-"
     auto_commit: bool = True
     conflict_resolution: str = "newest_file_wins"
+    require_final_review: bool = False  # Whether to require human review before final merge to main
+    workflow_branch_prefix: str = "workflow-"  # Prefix for workflow-specific branches
 
     # Agent Configuration
     default_cli_tool: str = "claude"
@@ -102,6 +108,13 @@ class HephaestusConfig:
 
         if not self.groq_api_key:
             self.groq_api_key = os.getenv("GROQ_API_KEY")
+        
+        # Vertex AI settings from environment
+        if not self.vertex_ai_project:
+            self.vertex_ai_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        
+        if not self.vertex_ai_location:
+            self.vertex_ai_location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
 
         # Set default model based on provider
         if not self.llm_model:
@@ -109,6 +122,8 @@ class HephaestusConfig:
                 self.llm_model = "gpt-5"
             elif self.llm_provider == "anthropic":
                 self.llm_model = "claude-sonnet-4-5-20250929"
+            elif self.llm_provider == "vertex_ai":
+                self.llm_model = "claude-sonnet-4.5"
 
     def to_env_dict(self) -> Dict[str, str]:
         """Convert config to environment variable dictionary for backend processes.
@@ -151,6 +166,8 @@ class HephaestusConfig:
             "WORKTREE_BRANCH_PREFIX": self.worktree_branch_prefix,
             "AUTO_COMMIT": str(self.auto_commit).lower(),
             "CONFLICT_RESOLUTION": self.conflict_resolution,
+            "REQUIRE_FINAL_REVIEW": str(self.require_final_review).lower(),
+            "WORKFLOW_BRANCH_PREFIX": self.workflow_branch_prefix,
 
             # Agent Configuration
             "DEFAULT_CLI_TOOL": self.default_cli_tool,
@@ -185,6 +202,12 @@ class HephaestusConfig:
             env["OPENROUTER_API_KEY"] = self.openrouter_api_key
         if self.groq_api_key:
             env["GROQ_API_KEY"] = self.groq_api_key
+        
+        # Vertex AI settings (only if set)
+        if self.vertex_ai_project:
+            env["GOOGLE_CLOUD_PROJECT"] = self.vertex_ai_project
+        if self.vertex_ai_location:
+            env["GOOGLE_CLOUD_LOCATION"] = self.vertex_ai_location
 
         # Optional Paths
         if self.phases_temp_dir:
@@ -219,9 +242,13 @@ class HephaestusConfig:
 
         if self.llm_provider == "groq" and not self.groq_api_key:
             raise ValueError("GROQ_API_KEY must be set for Groq provider")
+        
+        # Vertex AI uses service account auth, just needs project_id
+        if self.llm_provider == "vertex_ai" and not self.vertex_ai_project:
+            raise ValueError("GOOGLE_CLOUD_PROJECT must be set for Vertex AI provider")
 
         # Check provider is valid
-        valid_providers = ["openai", "anthropic", "openrouter", "groq"]
+        valid_providers = ["openai", "anthropic", "openrouter", "groq", "vertex_ai"]
         if self.llm_provider not in valid_providers:
             raise ValueError(
                 f"Invalid LLM provider: {self.llm_provider}. Must be one of {valid_providers}"
