@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from src.core.database import DatabaseManager, Workflow, Task, Phase, PhaseExecution, Agent
+from src.core.simple_config import get_config
+from src.services.incident_export_service import IncidentExportService
 
 if TYPE_CHECKING:
     from src.core.worktree_manager import WorktreeManager
@@ -122,6 +124,23 @@ class WorkflowCompletionHandler:
             workflow.status = "completed"
             workflow.completed_by_result = False  # Manual/auto completion, not result-based
             workflow.updated_at = datetime.utcnow()
+
+            # Export incident memories if enabled
+            config = get_config()
+            if config.incident_logging_enabled:
+                try:
+                    export_result = IncidentExportService.export_all(
+                        workflow_id=workflow_id,
+                        output_dir=config.incident_logging_output_dir
+                    )
+                    logger.info(
+                        f"Exported {export_result['total_incidents']} incidents to "
+                        f"{export_result['readme_path']}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to export incidents (non-blocking): {e}")
+            else:
+                logger.debug("Incident logging disabled, skipping export")
 
             session.commit()
             logger.info(f"Successfully completed workflow {workflow_id}")

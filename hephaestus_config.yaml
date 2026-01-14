@@ -102,3 +102,6 @@ ticket_tracking:
     model: gemini-embedding-001
     dimensions: 3072
     provider: vertex_ai
+incident_logging:
+  enabled: true
+  output_dir: agent_incidents

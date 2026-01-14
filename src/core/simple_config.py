@@ -159,6 +159,11 @@ class Config:
         self.default_human_review = ticket_tracking.get('default_human_review', False)
         self.default_approval_timeout = ticket_tracking.get('default_approval_timeout', 1800)
 
+        # Incident logging settings
+        incident_logging = config.get('incident_logging', {})
+        self.incident_logging_enabled = incident_logging.get('enabled', True)
+        self.incident_logging_output_dir = incident_logging.get('output_dir', 'agent_incidents')
+
     def _apply_defaults(self):
         """Apply default configuration values."""
         # Use same defaults as YAML loading
@@ -299,6 +304,10 @@ class Config:
             self.diagnostic_cooldown_seconds = int(os.getenv("DIAGNOSTIC_COOLDOWN_SECONDS"))
         if os.getenv("DIAGNOSTIC_MIN_STUCK_TIME"):
             self.diagnostic_min_stuck_time_seconds = int(os.getenv("DIAGNOSTIC_MIN_STUCK_TIME"))
+
+        # Incident logging settings from environment
+        if os.getenv("INCIDENT_LOGGING_ENABLED"):
+            self.incident_logging_enabled = os.getenv("INCIDENT_LOGGING_ENABLED").lower() == "true"
 
     def get_api_key(self):
         """Get the appropriate API key based on provider."""

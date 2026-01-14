@@ -162,6 +162,43 @@ This agent is operating within the context of the above workflow. All tasks and 
 
 **Remember**: Phase instructions are as important as task goals. Agents must follow both!
 
+### Incident Logging Detection
+
+**Watch for unlogged incidents in tmux output:**
+
+Indicators that an incident occurred:
+- Non-zero exit codes followed by retry
+- Error messages: "command not found", "module not found", "permission denied"
+- Agent corrections: "wrong path", "let me try again", "that didn't work"
+- Multiple attempts at same operation
+
+**Violation Pattern - Unlogged Incident:**
+
+❌ Agent hits error, retries, succeeds — but didn't call `save_memory` with 'incident' tag:
+- This is `violating_constraints`
+- Steering: "You encountered an operational issue ([brief description]). Please log this as an incident using save_memory with tags=['incident', '<classification>']."
+
+**Classification options** (for steering message):
+- `dependency` - missing package, wrong version
+- `pathing` - wrong directory, path confusion
+- `repo_state` - wrong branch, uncommitted changes
+- `tooling` - tool usage error, wrong command
+- `permissions` - access denied, sudo required
+- `config` - misconfiguration, env vars missing
+- `test_failure` - tests failing unexpectedly
+- `runtime` - runtime errors, crashes
+
+**NOT a violation:**
+- Single-attempt debugging (normal workflow)
+- Agent already logged the incident via `save_memory` with 'incident' tag
+- Minor typos corrected immediately (same command, fixed typo)
+- First attempt at an operation that failed
+
+**Evaluation Rule:**
+- If agent has 2+ retry attempts for same issue → check for incident logging
+- If no `save_memory` call with 'incident' tag found after retry → `needs_steering: true`
+- Look for `save_memory` calls containing `tags=["incident"` in the agent output
+
 ## Your Thinking Process
 
 ### Step 1: Build Accumulated Understanding

@@ -27,8 +27,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const subscribersRef = useRef<Map<string, Set<(data: any) => void>>>(new Map());
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Use a counter to track which WebSocket instance is current (handles StrictMode double-mount)
+  const connectionIdRef = useRef(0);
 
   const subscribe = useCallback((event: string, callback: (data: any) => void) => {
     if (!subscribersRef.current.has(event)) {
@@ -43,10 +46,28 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   }, []);
 
   useEffect(() => {
+    // Increment connection ID to invalidate any previous WebSocket callbacks
+    connectionIdRef.current += 1;
+    const currentConnectionId = connectionIdRef.current;
+
     const connectWebSocket = () => {
+      // Don't connect if this effect has been cleaned up
+      if (connectionIdRef.current !== currentConnectionId) return;
+
+      // Close existing connection if any
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+        wsRef.current.close();
+      }
+
       const websocket = new WebSocket('ws://localhost:8000/ws');
+      wsRef.current = websocket;
 
       websocket.onopen = () => {
+        // Ignore if this is a stale WebSocket (from previous mount)
+        if (connectionIdRef.current !== currentConnectionId) {
+          websocket.close();
+          return;
+        }
         setIsConnected(true);
         toast.success('Connected to server', { duration: 2000 });
       };
@@ -125,28 +146,44 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         }
       };
 
-      websocket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        toast.error('Connection error');
+      websocket.onerror = () => {
+        // Ignore errors from stale WebSocket instances (StrictMode double-mount)
+        if (connectionIdRef.current !== currentConnectionId) return;
+        // Suppress console logging - connection errors are handled by onclose/reconnect
       };
 
-      websocket.onclose = () => {
+      websocket.onclose = (event) => {
+        // Ignore close events from stale WebSocket instances
+        if (connectionIdRef.current !== currentConnectionId) return;
+
         setIsConnected(false);
-        toast.error('Disconnected from server', { duration: 2000 });
 
-        // Reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
+        // Only schedule reconnect if it wasn't a clean close (code 1000)
+        if (event.code !== 1000) {
+          // Schedule reconnect after 3 seconds
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (connectionIdRef.current === currentConnectionId) {
+              connectWebSocket();
+            }
+          }, 3000);
+        }
       };
-
-      setWs(websocket);
-
-      return websocket;
     };
 
-    const websocket = connectWebSocket();
+    connectWebSocket();
 
     return () => {
-      websocket.close();
+      // Clear any pending reconnect
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      // Close WebSocket connection cleanly
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounted');
+        wsRef.current = null;
+      }
     };
   }, []);
 

@@ -188,7 +188,10 @@ export interface WebSocketMessage {
     | 'status_changed'
     | 'comment_added'
     | 'commit_linked'
-    | 'ticket_resolved';
+    | 'ticket_resolved'
+    | 'ticket_approved'
+    | 'ticket_rejected'
+    | 'ticket_deleted';
   [key: string]: any;
 }
 

@@ -655,13 +655,51 @@ When another agent sends you a message, consider responding if you have helpful 
    - Save memories AS YOU GO, not just at task completion
    - Be specific in memory content (include error messages, file paths, exact solutions)
    - Use qdrant-find before reinventing the wheel
-   - Include tags and related_files in save_memory for better searchability"""
+   - Include tags and related_files in save_memory for better searchability
+
+7. **INCIDENT LOGGING** - Capturing Operational Problems:
+
+  **What counts as an incident (MUST log):**
+  1) A command fails (non-zero exit) OR produces an error that changes your plan
+  2) You realize you were in wrong context (wrong directory, worktree, branch, venv)
+  3) You waste time due to avoidable misunderstanding (path confusion, missing dependency)
+  4) You need more than one attempt to get a basic prerequisite working
+  5) You notice a recurring "agent trap" even if caught quickly
+
+  **How to log incidents:**
+  Use save_memory with the 'incident' tag:
+  ```
+  save_memory(
+      ai_agent_id="{agent_id}",
+      memory_content="INCIDENT: <short title> | symptom: <what happened> | attempted: <what you tried> | status: OPEN|TENTATIVE|VERIFIED | verify: <command/check>",
+      memory_type="warning",  # or "error_fix" if resolved
+      tags=["incident", "<classification>"],
+      related_files=["<relevant files>"]
+  )
+  ```
+
+  **Classifications** (pick one primary):
+  - `dependency` - missing package, wrong version
+  - `pathing` - wrong directory, path confusion
+  - `repo_state` - wrong branch, uncommitted changes
+  - `tooling` - tool usage error, wrong command
+  - `permissions` - access denied, sudo required
+  - `config` - misconfiguration, env vars missing
+  - `test_failure` - tests failing unexpectedly
+  - `runtime` - runtime errors, crashes
+
+  **Status meanings:**
+  - `OPEN` - don't know the fix yet
+  - `TENTATIVE` - tried something, not verified
+  - `VERIFIED` - ran verification command, confirmed fixed
+
+  **When to log:** Log DURING the run, not at the end. Quick ~30 seconds per incident."""
 
         # Add phase transition instructions if available
         if hasattr(task, 'phase_id') and task.phase_id:
             base_message += f"""
 
-7. Phase-Aware Task Creation:
+8. Phase-Aware Task Creation:
    - Always specify the phase number when creating tasks: phase=1, phase=2, etc.
    - You can create tasks for ANY phase based on what you discover
    - Phase 1 tasks: Planning, architecture, design decisions
