@@ -18,7 +18,7 @@ llm:
   embedding_model: gemini-embedding-001
   embedding_provider: vertex_ai
   default_provider: vertex_ai
-  default_model: claude-sonnet-4.5
+  default_model: claude-sonnet-4-5@20250929
   default_temperature: 0.7
   default_max_tokens: 4000
   providers:
@@ -27,35 +27,35 @@ llm:
       project_id: test-ds-research
       location: global
       models:
-      - claude-opus-4.5
-      - claude-sonnet-4.5
-      - claude-haiku-4.5
+      - claude-opus-4-5@20251101
+      - claude-sonnet-4-5@20250929
+      - claude-haiku-4-5@20251001
       - gemini-3-pro-preview
       - gemini-3-flash-preview
   model_assignments:
     task_enrichment:
       provider: vertex_ai
-      model: claude-sonnet-4.5
+      model: claude-sonnet-4-5@20250929
       temperature: 0.7
       max_tokens: 4000
     agent_monitoring:
       provider: vertex_ai
-      model: claude-haiku-4.5
+      model: claude-haiku-4-5@20251001
       temperature: 0.3
       max_tokens: 2000
     guardian_analysis:
       provider: vertex_ai
-      model: claude-opus-4.5
+      model: claude-opus-4-5@20251101
       temperature: 0.5
       max_tokens: 8000
     conductor_analysis:
       provider: vertex_ai
-      model: claude-opus-4.5
+      model: claude-opus-4-5@20251101
       temperature: 0.4
       max_tokens: 4000
     agent_prompts:
       provider: vertex_ai
-      model: claude-sonnet-4.5
+      model: claude-sonnet-4-5@20250929
       temperature: 0.8
       max_tokens: 4000
 agents:
@@ -88,7 +88,7 @@ task_deduplication:
   embedding_dimension: 3072
   batch_size: 100
 diagnostic_agent:
-  enabled: false
+  enabled: true
   cooldown_seconds: 60
   min_stuck_time_seconds: 60
   max_agents_to_analyze: 15

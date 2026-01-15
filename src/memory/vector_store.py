@@ -11,7 +11,6 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
-    SearchRequest,
 )
 from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -192,14 +191,18 @@ class VectorStoreManager:
                 qdrant_filter = Filter(must=conditions)
 
         try:
-            results = self.client.search(
+            # Use query_points (new API) instead of deprecated search method
+            response = self.client.query_points(
                 collection_name=full_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 query_filter=qdrant_filter,
                 score_threshold=score_threshold,
                 with_payload=True,
             )
+
+            # query_points returns an object with .points attribute
+            results = response.points if hasattr(response, 'points') else response
 
             return [
                 {

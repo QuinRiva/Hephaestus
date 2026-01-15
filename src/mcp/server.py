@@ -1917,6 +1917,54 @@ async def update_task_status(
                         logger.error(f"Failed to auto-link commit to ticket: {e}")
                         # Don't fail the task if ticket operations fail
 
+                # DESIGN NOTE: It's unclear if ticket resolution should happen automatically here
+                # or be managed explicitly by agents via MCP. Currently, most ticket moves are
+                # agent-driven, but blocking/unblocking requires resolve_ticket() to be called.
+                #
+                # BUG FIX: Without this, dependent tickets remain blocked forever because:
+                # 1. Task completes → task.status = "done"
+                # 2. But TicketService.resolve_ticket() is never called
+                # 3. So blocked_by_ticket_ids on dependent tickets is never cleared
+                # 4. Dependent tasks stay in "blocked" status indefinitely
+                #
+                # This automatic resolution ensures the unblocking cascade runs when tasks complete.
+                # If agent-driven resolution is preferred, remove this and update agent prompts
+                # to explicitly call resolve_ticket after completing work.
+                if task.ticket_id:
+                    try:
+                        logger.info(f"Auto-resolving ticket {task.ticket_id} (task {request.task_id} completed)")
+
+                        resolve_result = await TicketService.resolve_ticket(
+                            ticket_id=task.ticket_id,
+                            agent_id=agent_id,
+                            resolution_comment=f"Task completed: {request.summary[:200] if request.summary else 'No summary provided'}",
+                            commit_sha=merge_commit_sha
+                        )
+
+                        if resolve_result.get("success"):
+                            unblocked_tickets = resolve_result.get("unblocked_tickets", [])
+                            unblocked_tasks = resolve_result.get("unblocked_tasks", [])
+                            logger.info(
+                                f"Ticket {task.ticket_id} resolved. "
+                                f"Unblocked {len(unblocked_tickets)} ticket(s) and {len(unblocked_tasks)} task(s)"
+                            )
+
+                            # Broadcast ticket resolved with unblocking info
+                            await server_state.broadcast_update({
+                                "type": "ticket_resolved",
+                                "ticket_id": task.ticket_id,
+                                "task_id": request.task_id,
+                                "agent_id": agent_id,
+                                "unblocked_tickets": unblocked_tickets,
+                                "unblocked_tasks": unblocked_tasks
+                            })
+                        else:
+                            logger.warning(f"Failed to resolve ticket {task.ticket_id}: {resolve_result.get('message', 'Unknown error')}")
+
+                    except Exception as e:
+                        logger.error(f"Failed to auto-resolve ticket {task.ticket_id}: {e}")
+                        # Don't fail the task if ticket resolution fails
+
             # 4. Schedule agent termination and queue processing (only if no validation)
             async def terminate_and_process_queue():
                 await server_state.agent_manager.terminate_agent(agent_id)

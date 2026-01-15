@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 
-from src.core.database import get_db, Memory, Agent
+from src.core.database import get_db, Memory, Agent, Task
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +45,12 @@ class IncidentExportService:
     def _query_incidents(workflow_id: str) -> List[Dict[str, Any]]:
         """Query all memories with 'incident' tag for this workflow."""
         with get_db() as session:
-            agents = session.query(Agent).filter(
-                Agent.workflow_id == workflow_id
-            ).all()
-            agent_ids = [a.id for a in agents]
+            # Find agents through tasks since Agent doesn't have workflow_id directly
+            agent_ids = session.query(Task.assigned_agent_id).filter(
+                Task.workflow_id == workflow_id,
+                Task.assigned_agent_id.isnot(None)
+            ).distinct().all()
+            agent_ids = [a[0] for a in agent_ids if a[0]]
 
             if not agent_ids:
                 return []

@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings, AzureChatOpenAI, Azur
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
+from langchain_google_vertexai.model_garden import ChatAnthropicVertex
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.documents import Document
@@ -298,15 +299,29 @@ class LangChainLLMClient:
                                 "Use 'global' for Claude/Gemini 3 Pro, or regional like 'us-central1' for other models")
                     return None
 
-                logger.info(f"Creating Vertex AI model: {assignment.model} (project: {project_id}, location: {location})")
+                # Check if this is a Claude model (requires ChatAnthropicVertex from Model Garden)
+                # Claude models on Vertex AI use Anthropic's publisher, not Google's
+                if assignment.model.startswith("claude-"):
+                    logger.info(f"Creating Vertex AI Anthropic model: {assignment.model} (project: {project_id}, location: {location})")
+                    
+                    return ChatAnthropicVertex(
+                        model=assignment.model,  # e.g., "claude-opus-4-5@20251101", "claude-sonnet-4-5@20250929"
+                        project=project_id,
+                        location=location,
+                        temperature=assignment.temperature,
+                        max_tokens=assignment.max_tokens
+                    )
+                else:
+                    # Gemini models use ChatVertexAI
+                    logger.info(f"Creating Vertex AI model: {assignment.model} (project: {project_id}, location: {location})")
 
-                return ChatVertexAI(
-                    model=assignment.model,  # e.g., "gemini-2.0-flash", "claude-3-5-sonnet-v2@20241022"
-                    project=project_id,
-                    location=location,
-                    temperature=assignment.temperature,
-                    max_tokens=assignment.max_tokens
-                )
+                    return ChatVertexAI(
+                        model=assignment.model,  # e.g., "gemini-2.0-flash", "gemini-3-pro-preview"
+                        project=project_id,
+                        location=location,
+                        temperature=assignment.temperature,
+                        max_tokens=assignment.max_tokens
+                    )
 
             else:
                 logger.error(f"Unknown provider: {provider}")

@@ -4,6 +4,7 @@ import numpy as np
 import openai
 from typing import List, Dict, Any, Optional
 import logging
+import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from src.core.simple_config import get_config
 
@@ -11,29 +12,119 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """Service for generating and comparing embeddings."""
+    """Service for generating and comparing embeddings.
+    
+    Supports multiple embedding providers:
+    - openai: Uses OpenAI's text-embedding models
+    - vertex_ai: Uses Google Cloud Vertex AI embeddings
+    - google_ai: Uses Google Generative AI embeddings
+    """
 
-    def __init__(self, openai_api_key: str):
+    def __init__(self, openai_api_key: Optional[str] = None):
         """Initialize the embedding service.
 
         Args:
-            openai_api_key: OpenAI API key for generating embeddings
+            openai_api_key: OpenAI API key (optional if using other providers)
         """
-        self.client = openai.OpenAI(api_key=openai_api_key)
         self.config = get_config()
         self.model = self.config.task_embedding_model
-        logger.info(f"Initialized EmbeddingService with model: {self.model}")
+        
+        # Determine embedding provider from config
+        self.embedding_provider = getattr(self.config, 'embedding_provider', None)
+        if not self.embedding_provider:
+            # Fallback: infer from model name or default to openai
+            if 'gecko' in self.model.lower() or 'text-embedding-0' in self.model.lower():
+                self.embedding_provider = 'vertex_ai'
+            elif 'gemini' in self.model.lower():
+                self.embedding_provider = 'google_ai'
+            else:
+                self.embedding_provider = 'openai'
+        
+        logger.info(f"Initializing EmbeddingService with provider: {self.embedding_provider}, model: {self.model}")
+        
+        self._embedding_model = None
+        self._openai_client = None
+        
+        self._initialize_provider(openai_api_key)
+
+    def _initialize_provider(self, openai_api_key: Optional[str] = None):
+        """Initialize the appropriate embedding provider."""
+        
+        if self.embedding_provider == "openai":
+            # Use OpenAI directly
+            api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            if api_key:
+                self._openai_client = openai.OpenAI(api_key=api_key)
+                logger.info(f"  ✓ Initialized OpenAI embedding client with model: {self.model}")
+            else:
+                logger.warning("OpenAI API key not provided, embedding generation may fail")
+                
+        elif self.embedding_provider == "vertex_ai":
+            # Use LangChain VertexAIEmbeddings
+            try:
+                from langchain_google_vertexai import VertexAIEmbeddings
+                
+                project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                
+                if project_id:
+                    # Map gemini-embedding model names to Vertex AI equivalents
+                    model_name = self.model
+                    if model_name.startswith("gemini-embedding"):
+                        # gemini-embedding-001 -> text-embedding-005 (current best for Vertex AI)
+                        logger.warning(f"Model '{model_name}' is a Gemini API model. For Vertex AI, using 'text-embedding-005' instead.")
+                        model_name = "text-embedding-005"
+                    
+                    self._embedding_model = VertexAIEmbeddings(
+                        model_name=model_name,
+                        project=project_id,
+                        location=location
+                    )
+                    logger.info(f"  ✓ Initialized Vertex AI embedding client with model: {model_name} (project: {project_id}, location: {location})")
+                else:
+                    logger.error("GOOGLE_CLOUD_PROJECT environment variable required for Vertex AI embeddings")
+                    
+            except ImportError:
+                logger.error("langchain_google_vertexai not installed. Run: pip install langchain-google-vertexai")
+                
+        elif self.embedding_provider == "google_ai":
+            # Use LangChain GoogleGenerativeAIEmbeddings (for Gemini API)
+            try:
+                from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                
+                google_key = os.getenv("GOOGLE_API_KEY")
+                if google_key:
+                    # Format model name for Google AI
+                    model_name = self.model
+                    if not model_name.startswith("models/"):
+                        model_name = f"models/{model_name}"
+                    
+                    self._embedding_model = GoogleGenerativeAIEmbeddings(
+                        model=model_name,
+                        google_api_key=google_key
+                    )
+                    logger.info(f"  ✓ Initialized Google AI embedding client with model: {model_name}")
+                else:
+                    logger.error("GOOGLE_API_KEY environment variable required for Google AI embeddings")
+                    
+            except ImportError:
+                logger.error("langchain_google_genai not installed. Run: pip install langchain-google-genai")
+        else:
+            logger.warning(f"Unknown embedding provider: {self.embedding_provider}, falling back to OpenAI")
+            api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            if api_key:
+                self._openai_client = openai.OpenAI(api_key=api_key)
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(min=1, max=10),
         retry=retry_if_exception_type(
-            (openai.APIError, openai.APIConnectionError, openai.RateLimitError)
+            (openai.APIError, openai.APIConnectionError, openai.RateLimitError, Exception)
         ),
         reraise=True,
     )
     async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI's text-embedding model.
+        """Generate embedding using the configured provider.
 
         Retries up to 3 times with exponential backoff for API errors.
 
@@ -46,26 +137,38 @@ class EmbeddingService:
         Raises:
             Exception: If embedding generation fails after retries
         """
+        # Truncate text if too long
+        max_chars = 30000
+        if len(text) > max_chars:
+            logger.warning(f"Text truncated from {len(text)} to {max_chars} characters")
+            text = text[:max_chars]
+
         try:
-            # Truncate text if too long (max ~8000 tokens for most models)
-            max_chars = 30000  # Conservative limit
-            if len(text) > max_chars:
-                logger.warning(f"Text truncated from {len(text)} to {max_chars} characters")
-                text = text[:max_chars]
-
-            response = self.client.embeddings.create(
-                model=self.model, input=text, encoding_format="float"
-            )
-
-            embedding = response.data[0].embedding
-            logger.info(f"Generated embedding with dimension: {len(embedding)}")
-            return embedding
+            if self._embedding_model is not None:
+                # Use LangChain embedding model (Vertex AI or Google AI)
+                embedding = await self._embedding_model.aembed_query(text[:8000])
+                logger.debug(f"Generated embedding with dimension: {len(embedding)} via {self.embedding_provider}")
+                return embedding
+                
+            elif self._openai_client is not None:
+                # Use OpenAI client directly
+                response = self._openai_client.embeddings.create(
+                    model=self.model, input=text, encoding_format="float"
+                )
+                embedding = response.data[0].embedding
+                logger.debug(f"Generated embedding with dimension: {len(embedding)} via OpenAI")
+                return embedding
+            else:
+                logger.error("No embedding provider initialized")
+                # Return zero vector as fallback
+                dimension = getattr(self.config, 'task_embedding_dimension', 3072)
+                return [0.0] * dimension
 
         except (openai.APIError, openai.APIConnectionError, openai.RateLimitError) as e:
             logger.warning(f"OpenAI API error (will retry): {e}")
             raise
         except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
+            logger.error(f"Failed to generate embedding via {self.embedding_provider}: {e}")
             raise
 
     def calculate_cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:

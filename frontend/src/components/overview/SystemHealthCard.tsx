@@ -1,8 +1,19 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { Activity, Bot, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
+import { Activity, Bot, CheckCircle, AlertCircle, TrendingUp, Shield, Clock, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+interface GuardianStatus {
+  is_running: boolean;
+  last_guardian_analysis_at: string | null;
+  last_conductor_analysis_at: string | null;
+  guardian_analyses_last_hour: number;
+  conductor_analyses_last_hour: number;
+  agents_analyzed_last_hour: number;
+  monitoring_interval_seconds: number;
+  activity_threshold_seconds: number;
+}
 
 interface SystemHealthProps {
   systemHealth?: {
@@ -12,9 +23,26 @@ interface SystemHealthProps {
     running_tasks: number;
     status: string;
   };
+  guardianStatus?: GuardianStatus;
 }
 
-export default function SystemHealthCard({ systemHealth }: SystemHealthProps) {
+function formatRelativeTime(timestamp: string | null): string {
+  if (!timestamp) return 'Never';
+  
+  const now = new Date();
+  const then = new Date(timestamp);
+  const diffMs = now.getTime() - then.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return then.toLocaleDateString();
+}
+
+export default function SystemHealthCard({ systemHealth, guardianStatus }: SystemHealthProps) {
   if (!systemHealth) {
     return (
       <Card className="h-full">
@@ -60,6 +88,51 @@ export default function SystemHealthCard({ systemHealth }: SystemHealthProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Guardian Status */}
+        {guardianStatus && (
+          <div className={cn(
+            "flex items-center justify-between p-3 rounded-lg border",
+            guardianStatus.is_running
+              ? "bg-green-50 border-green-200"
+              : "bg-red-50 border-red-200"
+          )}>
+            <div className="flex items-center">
+              <Shield className={cn(
+                "w-5 h-5 mr-2",
+                guardianStatus.is_running ? "text-green-600" : "text-red-600"
+              )} />
+              <div>
+                <div className={cn(
+                  "font-medium text-sm",
+                  guardianStatus.is_running ? "text-green-800" : "text-red-800"
+                )}>
+                  Guardian {guardianStatus.is_running ? 'Active' : 'Inactive'}
+                </div>
+                <div className="text-xs text-gray-600 flex items-center gap-2">
+                  <span className="flex items-center">
+                    <Clock className="w-3 h-3 mr-1" />
+                    {formatRelativeTime(guardianStatus.last_guardian_analysis_at)}
+                  </span>
+                  {guardianStatus.guardian_analyses_last_hour > 0 && (
+                    <span className="flex items-center">
+                      <Eye className="w-3 h-3 mr-1" />
+                      {guardianStatus.guardian_analyses_last_hour} analyses/hr
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            {guardianStatus.agents_analyzed_last_hour > 0 && (
+              <div className="text-right">
+                <div className="text-lg font-bold text-gray-700">
+                  {guardianStatus.agents_analyzed_last_hour}
+                </div>
+                <div className="text-xs text-gray-500">agents/hr</div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Coherence Score */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">

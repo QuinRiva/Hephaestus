@@ -493,12 +493,19 @@ class WorktreeManager:
         self,
         agent_id: str,
         worktree_path: str,
-        branch_name: str
+        branch_name: str,
+        workflow_branch: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Merge main branch into agent's branch to keep it up-to-date.
+        """Merge workflow branch (or main) into agent's branch to keep it up-to-date.
 
         This is called every time an agent starts (including restarts) to ensure
-        the agent has the latest changes from main before beginning work.
+        the agent has the latest changes from other agents before beginning work.
+
+        When workflow_branch is provided, merges from that branch to maintain
+        isolation from main. This ensures:
+        - Agents get updates from other completed agents in the same workflow
+        - The workflow branch can be cleanly diffed against its parent branch
+        - Main branch changes don't pollute the workflow's isolated work
 
         Uses the existing "newest file wins" conflict resolution strategy.
 
@@ -506,28 +513,32 @@ class WorktreeManager:
             agent_id: Agent identifier
             worktree_path: Path to the agent's worktree
             branch_name: Name of the agent's branch
+            workflow_branch: Optional workflow branch to merge from (preserves isolation)
+                           If not provided, falls back to config.base_branch (main)
 
         Returns:
             Dictionary with merge result details
         """
-        logger.info(f"[MAIN-MERGE:{agent_id}] ========== MERGE MAIN INTO BRANCH START ==========")
-        logger.info(f"[MAIN-MERGE:{agent_id}] Worktree path: {worktree_path}")
-        logger.info(f"[MAIN-MERGE:{agent_id}] Branch name: {branch_name}")
+        logger.info(f"[WORKFLOW-MERGE:{agent_id}] ========== MERGE INTO AGENT BRANCH START ==========")
+        logger.info(f"[WORKFLOW-MERGE:{agent_id}] Worktree path: {worktree_path}")
+        logger.info(f"[WORKFLOW-MERGE:{agent_id}] Agent branch: {branch_name}")
+        logger.info(f"[WORKFLOW-MERGE:{agent_id}] Workflow branch: {workflow_branch or 'None (using main)'}")
 
         start_time = datetime.utcnow()
         session = self.db_manager.get_session()
 
         try:
             # Open the worktree repository
-            logger.info(f"[MAIN-MERGE:{agent_id}] Opening worktree repository")
+            logger.info(f"[WORKFLOW-MERGE:{agent_id}] Opening worktree repository")
             worktree_repo = Repo(worktree_path)
 
-            logger.info(f"[MAIN-MERGE:{agent_id}] Current HEAD: {worktree_repo.head.commit.hexsha}")
-            logger.info(f"[MAIN-MERGE:{agent_id}] Current branch: {branch_name}")
+            logger.info(f"[WORKFLOW-MERGE:{agent_id}] Current HEAD: {worktree_repo.head.commit.hexsha}")
+            logger.info(f"[WORKFLOW-MERGE:{agent_id}] Current branch: {branch_name}")
 
-            # Get base branch/commit reference from config
-            base_ref = self.config.base_branch
-            logger.info(f"[MAIN-MERGE:{agent_id}] Base reference: {base_ref}")
+            # Use workflow branch if provided, otherwise fall back to main
+            # This preserves branch isolation - agents merge from workflow, not main
+            base_ref = workflow_branch if workflow_branch else self.config.base_branch
+            logger.info(f"[WORKFLOW-MERGE:{agent_id}] Merge source: {base_ref}")
 
             # Try to resolve base_ref - could be branch name or commit SHA
             try:

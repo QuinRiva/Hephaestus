@@ -141,7 +141,10 @@ export default function Overview() {
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
         {/* System Health */}
         <div className="lg:col-span-1">
-          <SystemHealthCard systemHealth={systemData?.system_health} />
+          <SystemHealthCard
+            systemHealth={systemData?.system_health}
+            guardianStatus={systemData?.guardian_status}
+          />
         </div>
 
         {/* Phase Distribution */}

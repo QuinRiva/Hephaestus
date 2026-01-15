@@ -156,6 +156,26 @@ class Guardian:
 
             # GPT-5 returns the complete trajectory analysis
             # Extract and enhance the results
+            
+            # Calculate session duration from session_start
+            session_start = accumulated_context.get("session_start")
+            if session_start:
+                session_duration = datetime.utcnow() - session_start
+                session_duration_str = str(session_duration).split('.')[0]  # Remove microseconds
+            else:
+                session_duration_str = "Unknown"
+            
+            # Get current focus from LLM response or derive from task
+            current_focus = analysis.get("current_focus")
+            if not current_focus:
+                # Derive from current phase and task
+                phase = analysis.get("current_phase", "unknown")
+                if task:
+                    task_desc = (task.enriched_description or task.raw_description or "")[:80]
+                    current_focus = f"{phase} - {task_desc}"
+                else:
+                    current_focus = phase
+            
             result = {
                 "agent_id": agent.id,
                 "agent_type": agent.agent_type,  # Include agent type for Conductor
@@ -169,7 +189,10 @@ class Guardian:
                 "steering_message": analysis.get("steering_recommendation"),  # Map from LLM response key
                 "accumulated_goal": accumulated_context["overall_goal"],
                 "active_constraints": accumulated_context["constraints"],
-                # Remove progress_percentage as requested
+                # Add missing fields for UI display
+                "current_focus": current_focus,
+                "session_duration": session_duration_str,
+                "conversation_length": accumulated_context.get("conversation_length", 0),
             }
 
             # Cache for Conductor
@@ -433,6 +456,10 @@ class Guardian:
             "steering_message": None,  # Keep consistent field name
             "accumulated_goal": "Unknown",
             "active_constraints": [],
+            # Add missing fields for UI display
+            "current_focus": "Analysis unavailable",
+            "session_duration": "Unknown",
+            "conversation_length": 0,
         }
 
     def get_cached_trajectory(self, agent_id: str) -> Optional[Dict[str, Any]]:

@@ -352,7 +352,7 @@ class FrontendAPI:
                         "related_task_id": memory.related_task_id,
                         "tags": memory.tags,
                         "related_files": memory.related_files,
-                        "created_at": memory.created_at.isoformat(),
+                        "created_at": memory.created_at.isoformat() + 'Z',  # Add UTC timezone indicator
                     }
                     for memory in memories
                 ],
@@ -1029,9 +1029,12 @@ class FrontendAPI:
     async def get_system_overview(self) -> Dict[str, Any]:
         """Get comprehensive system overview data."""
         from src.core.database import GuardianAnalysis, ConductorAnalysis
+        from src.core.simple_config import get_config
         from datetime import datetime, timedelta
         session = self.db_manager.get_session()
         try:
+            config = get_config()
+            
             # Get basic stats
             active_agents = session.query(func.count(Agent.id)).filter(
                 Agent.status != "terminated"
@@ -1102,6 +1105,68 @@ class FrontendAPI:
                     "phase": analysis.details.get("primary_phase") if analysis.details else None
                 })
 
+            # Guardian operational status - inferred from database activity
+            monitoring_interval = config.monitoring_interval_seconds
+            # Consider guardian "running" if we've seen activity within 2x the monitoring interval
+            guardian_activity_threshold = timedelta(seconds=monitoring_interval * 2)
+            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+            
+            # Get the most recent Guardian analysis overall
+            latest_guardian_overall = session.query(GuardianAnalysis).order_by(
+                desc(GuardianAnalysis.timestamp)
+            ).first()
+            
+            # Get the most recent Conductor analysis
+            latest_conductor_analysis = session.query(ConductorAnalysis).order_by(
+                desc(ConductorAnalysis.timestamp)
+            ).first()
+            
+            # Count Guardian analyses in the last hour
+            guardian_analyses_last_hour = session.query(func.count(GuardianAnalysis.id)).filter(
+                GuardianAnalysis.timestamp > one_hour_ago
+            ).scalar()
+            
+            # Count Conductor analyses in the last hour
+            conductor_analyses_last_hour = session.query(func.count(ConductorAnalysis.id)).filter(
+                ConductorAnalysis.timestamp > one_hour_ago
+            ).scalar()
+            
+            # Count unique agents analyzed in the last hour
+            agents_analyzed_last_hour = session.query(
+                func.count(func.distinct(GuardianAnalysis.agent_id))
+            ).filter(
+                GuardianAnalysis.timestamp > one_hour_ago
+            ).scalar()
+            
+            # Determine if Guardian is running based on recent activity
+            guardian_is_running = False
+            last_guardian_activity = None
+            last_conductor_activity = None
+            
+            if latest_guardian_overall:
+                last_guardian_activity = latest_guardian_overall.timestamp
+                time_since_last_guardian = datetime.utcnow() - latest_guardian_overall.timestamp
+                if time_since_last_guardian < guardian_activity_threshold:
+                    guardian_is_running = True
+            
+            if latest_conductor_analysis:
+                last_conductor_activity = latest_conductor_analysis.timestamp
+                time_since_last_conductor = datetime.utcnow() - latest_conductor_analysis.timestamp
+                # Also consider conductor activity as evidence of monitoring running
+                if time_since_last_conductor < guardian_activity_threshold:
+                    guardian_is_running = True
+            
+            guardian_status = {
+                "is_running": guardian_is_running,
+                "last_guardian_analysis_at": last_guardian_activity.isoformat() + 'Z' if last_guardian_activity else None,
+                "last_conductor_analysis_at": last_conductor_activity.isoformat() + 'Z' if last_conductor_activity else None,
+                "guardian_analyses_last_hour": guardian_analyses_last_hour,
+                "conductor_analyses_last_hour": conductor_analyses_last_hour,
+                "agents_analyzed_last_hour": agents_analyzed_last_hour,
+                "monitoring_interval_seconds": monitoring_interval,
+                "activity_threshold_seconds": monitoring_interval * 2,
+            }
+
             return {
                 "system_health": {
                     "coherence_score": latest_conductor["coherence_score"] if latest_conductor else 0,
@@ -1110,6 +1175,7 @@ class FrontendAPI:
                     "running_tasks": running_tasks,
                     "status": latest_conductor["system_status"] if latest_conductor else "No analysis available"
                 },
+                "guardian_status": guardian_status,
                 "phase_distribution": workflow_info["phases"] if workflow_info else [],
                 "latest_conductor_analysis": latest_conductor,
                 "recent_steering_events": recent_steerings,

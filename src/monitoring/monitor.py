@@ -421,6 +421,20 @@ class MonitoringLoop:
         # Cache for Guardian summaries
         self.guardian_summaries_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Guardian operational status tracking
+        self.guardian_status = {
+            "is_running": False,
+            "last_cycle_started_at": None,
+            "last_cycle_completed_at": None,
+            "last_guardian_analysis_at": None,
+            "last_conductor_analysis_at": None,
+            "last_cycle_agents_analyzed": 0,
+            "last_cycle_analyses_successful": 0,
+            "last_cycle_analyses_failed": 0,
+            "last_error": None,
+            "total_cycles_completed": 0,
+        }
+
         # Workflow completion handler for auto-completing has_result=False workflows
         self.completion_handler = WorkflowCompletionHandler(
             db_manager=db_manager,
@@ -450,6 +464,12 @@ class MonitoringLoop:
         """Execute one monitoring cycle with trajectory monitoring."""
         logger.debug("Starting trajectory monitoring cycle")
 
+        # Track Guardian operational status
+        cycle_start_time = datetime.utcnow()
+        self.guardian_status["is_running"] = True
+        self.guardian_status["last_cycle_started_at"] = cycle_start_time.isoformat() + 'Z'
+        self.guardian_status["last_error"] = None
+
         # DEBUG: Log phase_manager status
         logger.info(f"[DIAGNOSTIC CYCLE] phase_manager exists: {self.phase_manager is not None}")
         if self.phase_manager:
@@ -460,10 +480,12 @@ class MonitoringLoop:
         # Get all active agents
         agents = self.agent_manager.get_active_agents()
         logger.info(f"Trajectory monitoring {len(agents)} active agents")
+        self.guardian_status["last_cycle_agents_analyzed"] = len(agents)
 
         # Phase 1: Guardian Analysis (Parallel)
         guardian_summaries = []
         guardian_tasks = []
+        analyses_failed = 0
 
         for agent in agents:
             # Create async task for each Guardian analysis
@@ -482,10 +504,18 @@ class MonitoringLoop:
                 if result and not isinstance(result, Exception)
             ]
 
-            # Log any exceptions
+            # Log any exceptions and count failures
             for i, result in enumerate(guardian_results):
                 if isinstance(result, Exception):
                     logger.error(f"Guardian analysis failed for agent {agents[i].id}: {result}")
+                    analyses_failed += 1
+                    self.guardian_status["last_error"] = str(result)
+
+        # Track Guardian analysis metrics
+        self.guardian_status["last_cycle_analyses_successful"] = len(guardian_summaries)
+        self.guardian_status["last_cycle_analyses_failed"] = analyses_failed
+        if guardian_summaries:
+            self.guardian_status["last_guardian_analysis_at"] = datetime.utcnow().isoformat() + 'Z'
 
         # Debug: Log what we collected
         logger.info(f"DEBUG - Collected {len(guardian_summaries)} Guardian summaries")
@@ -507,6 +537,7 @@ class MonitoringLoop:
 
                 # Save Conductor analysis to dedicated table
                 await self._save_conductor_analysis(conductor_analysis)
+                self.guardian_status["last_conductor_analysis_at"] = datetime.utcnow().isoformat() + 'Z'
 
                 # Execute conductor decisions
                 if conductor_analysis.get('decisions'):
@@ -576,6 +607,33 @@ class MonitoringLoop:
             elif not self.phase_manager.workflow_id:
                 logger.warning(f"[DIAGNOSTIC] ❌ SKIPPED - phase_manager.workflow_id is None")
                 logger.warning(f"[DIAGNOSTIC] 💡 This likely means there's an active workflow in the DB that wasn't loaded on startup")
+
+        # Mark cycle as complete and update status
+        self.guardian_status["last_cycle_completed_at"] = datetime.utcnow().isoformat() + 'Z'
+        self.guardian_status["total_cycles_completed"] += 1
+        self.guardian_status["is_running"] = False
+
+    def get_guardian_status(self) -> Dict[str, Any]:
+        """Get the current Guardian operational status.
+
+        Returns:
+            Dictionary containing Guardian status including:
+            - is_running: Whether a monitoring cycle is currently running
+            - last_cycle_started_at: Timestamp of last cycle start
+            - last_cycle_completed_at: Timestamp of last cycle completion
+            - last_guardian_analysis_at: Timestamp of last successful Guardian analysis
+            - last_conductor_analysis_at: Timestamp of last successful Conductor analysis
+            - last_cycle_agents_analyzed: Number of agents analyzed in last cycle
+            - last_cycle_analyses_successful: Number of successful analyses in last cycle
+            - last_cycle_analyses_failed: Number of failed analyses in last cycle
+            - last_error: Last error message (if any)
+            - total_cycles_completed: Total number of cycles completed since startup
+        """
+        return {
+            **self.guardian_status,
+            "monitoring_interval_seconds": self.config.monitoring_interval_seconds,
+            "monitoring_loop_running": self.running,
+        }
 
     async def _guardian_analysis_for_agent(self, agent: Agent) -> Optional[Dict[str, Any]]:
         """Perform Guardian analysis for a single agent.

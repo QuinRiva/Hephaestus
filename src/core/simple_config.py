@@ -66,6 +66,7 @@ class Config:
         self.default_temperature = llm.get('default_temperature', 0.7)
         self.default_max_tokens = llm.get('default_max_tokens', 4000)
         self.embedding_model = llm.get('embedding_model', 'text-embedding-3-large')
+        self.embedding_provider = llm.get('embedding_provider', 'openai')  # Provider for embeddings
         self.system_prompt_max_length = llm.get('system_prompt_max_length', 8000)
 
         # Agent settings

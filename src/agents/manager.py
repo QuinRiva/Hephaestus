@@ -105,20 +105,39 @@ class AgentManager:
                 worktree_path = worktree_info["working_directory"]
                 logger.info(f"[AGENT_MANAGER] Created worktree for agent {agent_id} at {worktree_path}")
 
-                # Merge main into the agent's branch to ensure it has latest changes
-                logger.info(f"[AGENT_MANAGER] Merging main branch into agent's branch")
+                # Look up workflow branch to merge from (preserves isolation from main)
+                # If task belongs to a workflow, merge from workflow branch instead of main
+                workflow_branch = None
+                if hasattr(task, 'workflow_id') and task.workflow_id:
+                    try:
+                        with get_db() as db:
+                            from src.core.database import Workflow
+                            workflow = db.query(Workflow).filter_by(id=task.workflow_id).first()
+                            if workflow and workflow.workflow_branch_name:
+                                workflow_branch = workflow.workflow_branch_name
+                                logger.info(f"[AGENT_MANAGER] Task belongs to workflow {task.workflow_id}, using workflow branch: {workflow_branch}")
+                            else:
+                                logger.info(f"[AGENT_MANAGER] Workflow {task.workflow_id} has no branch, will use main")
+                    except Exception as e:
+                        logger.warning(f"[AGENT_MANAGER] Could not look up workflow branch: {e}")
+
+                # Merge workflow branch (or main) into the agent's branch
+                # This ensures agent has latest changes from completed agents in same workflow
+                merge_source = workflow_branch or "main"
+                logger.info(f"[AGENT_MANAGER] Merging {merge_source} into agent's branch")
                 try:
                     merge_result = self.worktree_manager.merge_main_into_branch(
                         agent_id=agent_id,
                         worktree_path=worktree_path,
-                        branch_name=worktree_info["branch_name"]
+                        branch_name=worktree_info["branch_name"],
+                        workflow_branch=workflow_branch
                     )
                     logger.info(
-                        f"[AGENT_MANAGER] Main merge completed: {merge_result['status']}, "
+                        f"[AGENT_MANAGER] Merge completed: {merge_result['status']}, "
                         f"{merge_result['total_conflicts']} conflicts resolved"
                     )
                 except Exception as e:
-                    logger.error(f"[AGENT_MANAGER] Failed to merge main into agent branch: {e}")
+                    logger.error(f"[AGENT_MANAGER] Failed to merge {merge_source} into agent branch: {e}")
                     # Continue anyway - agent will work from parent commit
                     # This shouldn't fail agent creation
 
